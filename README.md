@@ -67,7 +67,31 @@ Routing and runtime:
 - `LLM_CRANE_TRANSPORT`: current V0 transport, `stdio`
 - `LLM_CRANE_LOG_LEVEL`: runtime log level
 
-Runtime profile example:
+Ollama runtime profile example:
+
+```json
+[
+	{
+		"runtimeId": "ollama-local",
+		"providerId": "ollama",
+		"deploymentMode": "local",
+		"apiFamily": "ollama",
+		"baseUrl": "http://127.0.0.1:11434",
+		"models": ["qwen2.5-coder:7b"],
+		"authMode": "none",
+		"timeoutMs": 30000
+	}
+]
+```
+
+Minimal manual validation for Ollama:
+
+1. Start local runtime with `ollama serve`.
+2. Pull model with `ollama pull qwen2.5-coder:7b`.
+3. Set `LLM_CRANE_SIMPLE_MODEL` and `LLM_CRANE_COMPLEX_MODEL` to `qwen2.5-coder:7b`.
+4. Set `LLM_CRANE_RUNTIME_PROFILES` to Ollama profile above, then run `LLM Crane: Run Task` in VS Code.
+
+OpenAI-compatible local runtime example:
 
 ```json
 [

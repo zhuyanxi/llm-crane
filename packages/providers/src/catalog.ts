@@ -1,5 +1,5 @@
-export type ProviderId = 'openai' | 'anthropic' | 'deepseek' | 'gemini';
-export type ProviderApiFamily = 'openai-compatible' | 'anthropic' | 'gemini';
+export type ProviderId = 'openai' | 'anthropic' | 'deepseek' | 'gemini' | 'ollama';
+export type ProviderApiFamily = 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama';
 
 export type ModelCapabilityTier = 'low-cost' | 'high-capability';
 

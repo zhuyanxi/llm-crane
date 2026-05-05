@@ -24,6 +24,14 @@ function createJsonResponse(status: number, payload: unknown) {
   };
 }
 
+function createAbortError() {
+  const error = new Error('The operation was aborted.');
+  Object.defineProperty(error, 'name', {
+    value: 'AbortError',
+  });
+  return error;
+}
+
 describe('model catalog', () => {
   it('returns provider ids for supported models', () => {
     expect(getProviderIdForModel('gpt-4o-mini')).toBe('openai');
@@ -302,6 +310,175 @@ describe('ProviderRegistry', () => {
         runtimeId: 'lmstudio-local',
         providerId: 'openai',
         deploymentMode: 'local',
+      }),
+    );
+  });
+
+  it('routes ollama runtime profile through ollama adapter', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(200, {
+        model: 'qwen2.5-coder:7b',
+        response: 'ollama result',
+        done: true,
+        done_reason: 'stop',
+        prompt_eval_count: 18,
+        eval_count: 12,
+      }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'ollama-local',
+            providerId: 'ollama',
+            deploymentMode: 'local',
+            apiFamily: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            models: ['qwen2.5-coder:7b'],
+            authMode: 'none',
+            timeoutMs: 30000,
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    const result = await registry.invoke({
+      modelId: 'qwen2.5-coder:7b',
+      prompt: 'Explain function',
+      systemPrompt: 'Be concise',
+      maxOutputTokens: 256,
+      temperature: 0.1,
+    });
+
+    expect(result.providerId).toBe('ollama');
+    expect(result.outputText).toBe('ollama result');
+    expect(result.stopReason).toBe('stop');
+    expect(result.usage).toEqual({
+      inputTokens: 18,
+      outputTokens: 12,
+      totalTokens: 30,
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:11434/api/generate');
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body ?? '{}')).toEqual(
+      expect.objectContaining({
+        model: 'qwen2.5-coder:7b',
+        prompt: 'Explain function',
+        system: 'Be concise',
+        stream: false,
+      }),
+    );
+  });
+
+  it('maps ollama missing model errors to unsupported_model', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(404, {
+        error: "model 'missing-model' not found, try pulling it first",
+      }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'ollama-local',
+            providerId: 'ollama',
+            deploymentMode: 'local',
+            apiFamily: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            models: ['missing-model'],
+            authMode: 'none',
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'missing-model',
+        prompt: 'Run local model',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'ollama',
+        code: 'unsupported_model',
+        retriable: false,
+        statusCode: 404,
+      }),
+    );
+  });
+
+  it('maps ollama network failures when service is unavailable', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockRejectedValue(new Error('fetch failed'));
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'ollama-local',
+            providerId: 'ollama',
+            deploymentMode: 'local',
+            apiFamily: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            models: ['qwen2.5-coder:7b'],
+            authMode: 'none',
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'qwen2.5-coder:7b',
+        prompt: 'Run local model',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'ollama',
+        code: 'network',
+        retriable: true,
+      }),
+    );
+  });
+
+  it('maps ollama aborts to timeout', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockRejectedValue(createAbortError());
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'ollama-local',
+            providerId: 'ollama',
+            deploymentMode: 'local',
+            apiFamily: 'ollama',
+            baseUrl: 'http://127.0.0.1:11434',
+            models: ['qwen2.5-coder:7b'],
+            authMode: 'none',
+            timeoutMs: 5,
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'qwen2.5-coder:7b',
+        prompt: 'Run local model',
+        timeoutMs: 5,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'ollama',
+        code: 'timeout',
+        retriable: true,
       }),
     );
   });

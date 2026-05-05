@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
-export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemini']);
+export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemini', 'ollama']);
 export const TransportSchema = z.enum(['stdio', 'ipc']);
 export const QualityBarSchema = z.enum(['fast', 'balanced', 'high']);
 export const CacheModeSchema = z.enum(['default', 'bypass']);
 export const ProviderDeploymentModeSchema = z.enum(['hosted', 'local']);
-export const ProviderApiFamilySchema = z.enum(['openai-compatible', 'anthropic', 'gemini']);
+export const ProviderApiFamilySchema = z.enum(['openai-compatible', 'anthropic', 'gemini', 'ollama']);
 export const ProviderAuthModeSchema = z.enum(['none', 'bearer', 'header', 'query']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);

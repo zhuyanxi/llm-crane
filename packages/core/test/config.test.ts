@@ -17,26 +17,29 @@ describe('loadRuntimeConfig', () => {
     expect(() => loadRuntimeConfig({})).toThrow(ConfigurationError);
   });
 
-  it('loads config when local runtime profile provides configured models', () => {
+  it('loads config when ollama runtime profile provides configured models', () => {
     const config = loadRuntimeConfig({
-      LLM_CRANE_SIMPLE_MODEL: 'local-qwen2.5-coder',
-      LLM_CRANE_COMPLEX_MODEL: 'local-llama3.1-instruct',
+      LLM_CRANE_SIMPLE_MODEL: 'qwen2.5-coder:7b',
+      LLM_CRANE_COMPLEX_MODEL: 'llama3.1:8b-instruct-q4_K_M',
       LLM_CRANE_RUNTIME_PROFILES: JSON.stringify([
         {
-          runtimeId: 'lmstudio-local',
-          providerId: 'openai',
+          runtimeId: 'ollama-local',
+          providerId: 'ollama',
           deploymentMode: 'local',
-          apiFamily: 'openai-compatible',
-          baseUrl: 'http://127.0.0.1:1234/v1',
-          models: ['local-qwen2.5-coder', 'local-llama3.1-instruct'],
+          apiFamily: 'ollama',
+          baseUrl: 'http://127.0.0.1:11434',
+          models: ['qwen2.5-coder:7b', 'llama3.1:8b-instruct-q4_K_M'],
           authMode: 'none',
+          timeoutMs: 30000,
         },
       ]),
     });
 
-    expect(config.defaultSimpleModel).toBe('local-qwen2.5-coder');
+    expect(config.defaultSimpleModel).toBe('qwen2.5-coder:7b');
     expect(config.runtimeProfiles).toHaveLength(1);
-    expect(config.runtimeProfiles[0]?.runtimeId).toBe('lmstudio-local');
+    expect(config.runtimeProfiles[0]?.runtimeId).toBe('ollama-local');
+    expect(config.runtimeProfiles[0]?.providerId).toBe('ollama');
+    expect(config.runtimeProfiles[0]?.apiFamily).toBe('ollama');
   });
 
   it('throws when runtime profile conflicts with hosted model ownership', () => {

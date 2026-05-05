@@ -49,12 +49,24 @@ describe('RuntimeConfigSchema', () => {
           models: ['local-qwen2.5-coder'],
           authMode: 'none',
         },
+        {
+          runtimeId: 'ollama-local',
+          providerId: 'ollama',
+          deploymentMode: 'local',
+          apiFamily: 'ollama',
+          baseUrl: 'http://127.0.0.1:11434',
+          models: ['qwen2.5-coder:7b'],
+          authMode: 'none',
+          timeoutMs: 30000,
+        },
       ],
     });
 
     expect(parsed.runtimeProfiles[0]?.runtimeId).toBe('lmstudio-local');
     expect(parsed.runtimeProfiles[0]?.deploymentMode).toBe('local');
     expect(parsed.runtimeProfiles[0]?.apiFamily).toBe('openai-compatible');
+    expect(parsed.runtimeProfiles[1]?.providerId).toBe('ollama');
+    expect(parsed.runtimeProfiles[1]?.apiFamily).toBe('ollama');
   });
 });
 

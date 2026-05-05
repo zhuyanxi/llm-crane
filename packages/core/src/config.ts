@@ -6,6 +6,7 @@ import { ConfigurationError } from './errors';
 loadDotenv();
 
 type EnvSource = Record<string, string | undefined>;
+type HostedProviderKey = keyof RuntimeConfig['providerKeys'];
 
 function parseRuntimeProfiles(env: EnvSource): ProviderRuntimeProfile[] {
   const rawProfiles = env.LLM_CRANE_RUNTIME_PROFILES;
@@ -41,7 +42,7 @@ function validateConfiguredModelOwnership(
       continue;
     }
 
-    for (const modelId of getSupportedModelIdsForProvider(providerId as keyof RuntimeConfig['providerKeys'])) {
+    for (const modelId of getSupportedModelIdsForProvider(providerId as HostedProviderKey)) {
       registerOwner(modelId, `hosted:${providerId}`);
     }
   }
@@ -63,7 +64,9 @@ function requireConfiguredModel(modelId: string, providerKeys: RuntimeConfig['pr
     throw new ConfigurationError(`Unsupported model id: ${modelId}`);
   }
 
-  if (!providerKeys[providerId]) {
+  const hostedProviderKey = providerId as HostedProviderKey;
+
+  if (!providerKeys[hostedProviderKey]) {
     throw new ConfigurationError(`Missing provider or runtime configuration for model: ${modelId}`);
   }
 }

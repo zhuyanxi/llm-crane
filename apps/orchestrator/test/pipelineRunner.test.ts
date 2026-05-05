@@ -1,6 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createProviderRegistry, type FetchLike } from '@llm-crane/providers';
 import type { RuntimeConfig, TaskRequest } from '@llm-crane/schemas';
 import { runTaskPipeline } from '../src/pipelineRunner';
+
+function createJsonResponse(status: number, payload: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return payload;
+    },
+    async text() {
+      return JSON.stringify(payload);
+    },
+  };
+}
 
 const runtimeConfig: RuntimeConfig = {
   defaultSimpleModel: 'gpt-4o-mini',
@@ -183,5 +197,127 @@ describe('runTaskPipeline', () => {
     expect(response.diagnostic?.category).toBe('provider');
     expect(response.diagnostic?.code).toBe('provider.rate_limit');
     expect(response.costEstimate.status).toBe('unknown');
+  });
+
+  it('runs simple path end to end through ollama runtime profile', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(200, {
+        model: 'qwen2.5-coder:7b',
+        response: 'ollama pipeline result',
+        done: true,
+        done_reason: 'stop',
+        prompt_eval_count: 120,
+        eval_count: 40,
+      }),
+    );
+
+    const ollamaRuntimeConfig: RuntimeConfig = {
+      defaultSimpleModel: 'qwen2.5-coder:7b',
+      defaultComplexModel: 'qwen2.5-coder:7b',
+      transport: 'stdio',
+      logLevel: 'info',
+      providerKeys: {},
+      runtimeProfiles: [
+        {
+          runtimeId: 'ollama-local',
+          providerId: 'ollama',
+          deploymentMode: 'local',
+          apiFamily: 'ollama',
+          baseUrl: 'http://127.0.0.1:11434',
+          models: ['qwen2.5-coder:7b'],
+          authMode: 'none',
+          timeoutMs: 30000,
+        },
+      ],
+    };
+
+    const providerRegistry = createProviderRegistry(
+      {
+        runtimeProfiles: ollamaRuntimeConfig.runtimeProfiles,
+      },
+      { fetch: fetchMock },
+    );
+
+    const response = await runTaskPipeline(
+      ollamaRuntimeConfig,
+      providerRegistry,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+      },
+    );
+
+    expect(response.selectedProvider.providerId).toBe('ollama');
+    expect(response.selectedProvider.modelId).toBe('qwen2.5-coder:7b');
+    expect(response.providerResult.status).toBe('completed');
+    expect(response.output).toBe('ollama pipeline result');
+    expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:11434/api/generate');
+  });
+
+  it('returns unified provider diagnostic when ollama model is missing', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(404, {
+        error: "model 'missing-model' not found, try pulling it first",
+      }),
+    );
+
+    const ollamaRuntimeConfig: RuntimeConfig = {
+      defaultSimpleModel: 'missing-model',
+      defaultComplexModel: 'missing-model',
+      transport: 'stdio',
+      logLevel: 'info',
+      providerKeys: {},
+      runtimeProfiles: [
+        {
+          runtimeId: 'ollama-local',
+          providerId: 'ollama',
+          deploymentMode: 'local',
+          apiFamily: 'ollama',
+          baseUrl: 'http://127.0.0.1:11434',
+          models: ['missing-model'],
+          authMode: 'none',
+        },
+      ],
+    };
+
+    const providerRegistry = createProviderRegistry(
+      {
+        runtimeProfiles: ollamaRuntimeConfig.runtimeProfiles,
+      },
+      { fetch: fetchMock },
+    );
+
+    const response = await runTaskPipeline(
+      ollamaRuntimeConfig,
+      providerRegistry,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+      },
+    );
+
+    expect(response.providerResult.status).toBe('failed');
+    expect(response.diagnostic?.category).toBe('provider');
+    expect(response.diagnostic?.code).toBe('provider.unsupported_model');
+    expect(response.selectedProvider.providerId).toBe('ollama');
   });
 });

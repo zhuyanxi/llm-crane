@@ -1,5 +1,5 @@
 import { getProviderIdForModel, getSupportedModelIdsForProvider, type ProviderApiFamily, type ProviderId } from './catalog';
-import { ProviderInvocationError } from './errors';
+import { ProviderInvocationError, type ProviderErrorCode } from './errors';
 
 export type ProviderInvocationRequest = {
   modelId: string;
@@ -103,6 +103,8 @@ type AnthropicProviderConfig = ProviderFactoryContext;
 
 type GeminiProviderConfig = ProviderFactoryContext;
 
+type OllamaProviderConfig = ProviderFactoryContext;
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -167,18 +169,35 @@ function readUsage(payload: unknown): ProviderTokenUsage | undefined {
   }
 
   const usage = Reflect.get(payload, 'usage');
-  if (typeof usage !== 'object' || usage === null) {
+  const usageSource = typeof usage === 'object' && usage !== null ? usage : payload;
+
+  const inputTokens =
+    Reflect.get(usageSource, 'prompt_tokens') ??
+    Reflect.get(usageSource, 'input_tokens') ??
+    Reflect.get(usageSource, 'prompt_eval_count');
+  const outputTokens =
+    Reflect.get(usageSource, 'completion_tokens') ??
+    Reflect.get(usageSource, 'output_tokens') ??
+    Reflect.get(usageSource, 'eval_count');
+  const totalTokens = Reflect.get(usageSource, 'total_tokens');
+
+  const resolvedInputTokens = typeof inputTokens === 'number' ? inputTokens : undefined;
+  const resolvedOutputTokens = typeof outputTokens === 'number' ? outputTokens : undefined;
+  const resolvedTotalTokens =
+    typeof totalTokens === 'number'
+      ? totalTokens
+      : resolvedInputTokens !== undefined && resolvedOutputTokens !== undefined
+        ? resolvedInputTokens + resolvedOutputTokens
+        : undefined;
+
+  if (resolvedInputTokens === undefined && resolvedOutputTokens === undefined && resolvedTotalTokens === undefined) {
     return undefined;
   }
 
-  const inputTokens = Reflect.get(usage, 'prompt_tokens') ?? Reflect.get(usage, 'input_tokens');
-  const outputTokens = Reflect.get(usage, 'completion_tokens') ?? Reflect.get(usage, 'output_tokens');
-  const totalTokens = Reflect.get(usage, 'total_tokens');
-
   return {
-    inputTokens: typeof inputTokens === 'number' ? inputTokens : undefined,
-    outputTokens: typeof outputTokens === 'number' ? outputTokens : undefined,
-    totalTokens: typeof totalTokens === 'number' ? totalTokens : undefined,
+    inputTokens: resolvedInputTokens,
+    outputTokens: resolvedOutputTokens,
+    totalTokens: resolvedTotalTokens,
   };
 }
 
@@ -391,13 +410,55 @@ function extractGeminiText(payload: unknown): string {
   return normalizeOutputText(parts);
 }
 
+function extractOllamaText(payload: unknown): string {
+  if (typeof payload !== 'object' || payload === null) {
+    return '';
+  }
+
+  const directResponse = normalizeOutputText(Reflect.get(payload, 'response'));
+  if (directResponse) {
+    return directResponse;
+  }
+
+  return normalizeOutputText(Reflect.get(payload, 'message'));
+}
+
 function readStopReason(payload: unknown): string | undefined {
   if (typeof payload !== 'object' || payload === null) {
     return undefined;
   }
 
-  const stopReason = Reflect.get(payload, 'stop_reason') ?? Reflect.get(payload, 'finish_reason');
+  const stopReason = Reflect.get(payload, 'stop_reason') ?? Reflect.get(payload, 'finish_reason') ?? Reflect.get(payload, 'done_reason');
   return typeof stopReason === 'string' ? stopReason : undefined;
+}
+
+function resolveOllamaApiPath(baseUrl: string, path: string): string {
+  const pathname = new URL(normalizeBaseUrl(baseUrl)).pathname.replace(/\/+$/, '');
+  return pathname.endsWith('/api') ? path : `/api${path}`;
+}
+
+function shouldMapToOllamaUnsupportedModel(error: ProviderInvocationError): boolean {
+  if (error.code !== 'invalid_request') {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return error.statusCode === 404 || (message.includes('model') && message.includes('not found')) || message.includes('pull');
+}
+
+function remapOllamaError(error: ProviderInvocationError, providerId: ProviderId): ProviderInvocationError {
+  if (!shouldMapToOllamaUnsupportedModel(error)) {
+    return error;
+  }
+
+  return new ProviderInvocationError(error.message, {
+    providerId,
+    code: 'unsupported_model',
+    retriable: false,
+    statusCode: error.statusCode,
+    details: error.details,
+    cause: error,
+  });
 }
 
 export function createOpenAICompatibleProvider(config: OpenAICompatibleProviderConfig): ModelProvider {
@@ -585,6 +646,75 @@ export function createGeminiProvider(config: GeminiProviderConfig): ModelProvide
   };
 }
 
+export function createOllamaProvider(config: OllamaProviderConfig): ModelProvider {
+  const supportedModelSet = createSupportedModelSet(config.supportedModels);
+
+  return {
+    runtimeId: config.runtimeId,
+    providerId: config.providerId,
+    deploymentMode: config.deploymentMode,
+    apiFamily: config.apiFamily,
+    supportedModels: [...supportedModelSet],
+    supportsModel(modelId: string): boolean {
+      return supportedModelSet.has(modelId);
+    },
+    async invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult> {
+      assertSupportedProviderModel(config, supportedModelSet, request.modelId);
+
+      const options: Record<string, number> = {};
+      if (request.temperature !== undefined) {
+        options.temperature = request.temperature;
+      }
+      if (request.maxOutputTokens !== undefined) {
+        options.num_predict = request.maxOutputTokens;
+      }
+
+      try {
+        const { payload, latencyMs } = await postJson(
+          config,
+          request,
+          resolveOllamaApiPath(config.baseUrl, '/generate'),
+          {
+            'Content-Type': 'application/json',
+          },
+          {
+            model: request.modelId,
+            prompt: request.prompt,
+            system: request.systemPrompt,
+            stream: false,
+            ...(Object.keys(options).length > 0 ? { options } : {}),
+          },
+        );
+
+        const outputText = extractOllamaText(payload);
+        if (!outputText) {
+          throw new ProviderInvocationError('Provider ollama returned empty completion.', {
+            providerId: config.providerId,
+            code: 'upstream',
+            retriable: true,
+            details: payload,
+          });
+        }
+
+        return {
+          providerId: config.providerId,
+          modelId: request.modelId,
+          outputText,
+          stopReason: readStopReason(payload),
+          usage: readUsage(payload),
+          latencyMs,
+        };
+      } catch (error) {
+        if (error instanceof ProviderInvocationError) {
+          throw remapOllamaError(error, config.providerId);
+        }
+
+        throw error;
+      }
+    },
+  };
+}
+
 export type ProviderApiKeys = Partial<Record<ProviderId, string>>;
 
 export type ProviderRegistryConfig = {
@@ -602,6 +732,7 @@ const DEFAULT_BASE_URLS: Record<ProviderId, string> = {
   anthropic: 'https://api.anthropic.com/v1',
   deepseek: 'https://api.deepseek.com/v1',
   gemini: 'https://generativelanguage.googleapis.com/v1beta',
+  ollama: 'http://127.0.0.1:11434',
 };
 
 export class ProviderRegistry {
@@ -713,6 +844,8 @@ function createRuntimeProfileProvider(profile: ProviderRuntimeProfile, fetch: Fe
       return createAnthropicProvider(baseConfig);
     case 'gemini':
       return createGeminiProvider(baseConfig);
+    case 'ollama':
+      return createOllamaProvider(baseConfig);
   }
 }
 
