@@ -1,0 +1,18 @@
+{
+  "name": "@llm-crane/core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src test --max-warnings=0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@llm-crane/providers": "workspace:*",
+    "@llm-crane/schemas": "workspace:*",
+    "dotenv": "^16.5.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "LLM Crane: Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/llm-crane/apps/vscode-extension"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/llm-crane/apps/vscode-extension/dist/**/*.js"
+      ]
+    },
+    {
+      "name": "LLM Crane: Orchestrator",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}/llm-crane/apps/orchestrator",
+      "program": "${workspaceFolder}/llm-crane/apps/orchestrator/dist/index.js",
+      "runtimeExecutable": "node",
+      "skipFiles": ["<node_internals>/**"]
+    }
+  ]
+}
