@@ -139,5 +139,6 @@ dist
 .turbo/
 .pnpm-store/
 *.vsix
+apps/vscode-extension/.vsix-stage/
 .DS_Store
 

@@ -101,8 +101,11 @@ Common package-scoped examples:
 ```bash
 corepack pnpm --filter @llm-crane/orchestrator test
 corepack pnpm --filter @llm-crane/vscode-extension build
+corepack pnpm --filter @llm-crane/vscode-extension package:vsix
 corepack pnpm --filter @llm-crane/schemas typecheck
 ```
+
+VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts/llm-crane-<version>.vsix`.
 
 ### Debugging
 

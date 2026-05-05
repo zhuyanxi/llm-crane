@@ -2,6 +2,8 @@
   "name": "@llm-crane/vscode-extension",
   "version": "0.1.0",
   "private": true,
+  "displayName": "LLM Crane",
+  "description": "Local-first, developer-first LLM orchestrator for VS Code.",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -21,13 +23,35 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
     "lint": "eslint src --max-warnings=0",
+    "package:vsix": "node ./scripts/package-vsix.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "llmCranePackaging": {
+    "name": "llm-crane",
+    "publisher": "llm-crane-local",
+    "displayName": "LLM Crane",
+    "description": "Local-first, developer-first LLM orchestrator for VS Code.",
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/zhuyanxi/llm-crane.git"
+    },
+    "categories": [
+      "Other"
+    ],
+    "keywords": [
+      "llm",
+      "orchestrator",
+      "ai",
+      "vscode"
+    ]
   },
   "dependencies": {
     "@llm-crane/core": "workspace:*",
     "@llm-crane/schemas": "workspace:*"
   },
   "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "esbuild": "^0.25.5",
     "@types/vscode": "^1.100.0"
   }
 }

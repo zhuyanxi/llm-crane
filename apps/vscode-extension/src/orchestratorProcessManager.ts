@@ -132,13 +132,13 @@ export class OrchestratorProcessManager {
       const orchestratorEntryPath = this.getOrchestratorEntryPath();
       if (!fs.existsSync(orchestratorEntryPath)) {
         throw new Error(
-          `Orchestrator build output missing at ${orchestratorEntryPath}. Run corepack pnpm --filter @llm-crane/orchestrator build.`,
+          `Orchestrator entry missing at ${orchestratorEntryPath}. Run extension VSIX packaging bundle or corepack pnpm --filter @llm-crane/orchestrator build for repo development.`,
         );
       }
 
       const readyPromise = this.createReadyPromise(5000);
       const orchestratorProcess = childProcess.spawn(process.execPath, [orchestratorEntryPath], {
-        cwd: path.resolve(this.extensionRootPath, '../..'),
+        cwd: this.getOrchestratorWorkingDirectory(orchestratorEntryPath),
         env: {
           ...process.env,
           LLM_CRANE_CACHE_PATH: this.getCacheDatabasePath(),
@@ -230,6 +230,11 @@ export class OrchestratorProcessManager {
     const cacheDirectory = path.join(this.storageRootPath, 'cache');
     fs.mkdirSync(cacheDirectory, { recursive: true });
     return path.join(cacheDirectory, 'task-cache.sqlite');
+  }
+
+  private getOrchestratorWorkingDirectory(orchestratorEntryPath: string): string {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    return workspaceRoot ?? path.dirname(orchestratorEntryPath);
   }
 
   private handleProtocolLine(line: string): void {
@@ -410,6 +415,11 @@ export class OrchestratorProcessManager {
   }
 
   private getOrchestratorEntryPath(): string {
+    const packagedEntryPath = path.resolve(this.extensionRootPath, 'dist/orchestrator.js');
+    if (fs.existsSync(packagedEntryPath)) {
+      return packagedEntryPath;
+    }
+
     return path.resolve(this.extensionRootPath, '../orchestrator/dist/index.js');
   }
 
