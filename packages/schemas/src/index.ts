@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemini']);
 export const TransportSchema = z.enum(['stdio', 'ipc']);
 export const QualityBarSchema = z.enum(['fast', 'balanced', 'high']);
+export const CacheModeSchema = z.enum(['default', 'bypass']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
 
@@ -44,6 +45,16 @@ export const ProviderUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().optional(),
   outputTokens: z.number().int().nonnegative().optional(),
   totalTokens: z.number().int().nonnegative().optional(),
+});
+
+export const CacheStatusSchema = z.enum(['hit', 'miss', 'bypassed']);
+
+export const CacheInfoSchema = z.object({
+  status: CacheStatusSchema,
+  key: z.string().min(1),
+  storage: z.literal('sqlite'),
+  createdAt: z.string().datetime().optional(),
+  detail: z.string().min(1),
 });
 
 export const CostEstimateStatusSchema = z.enum(['exact', 'estimated', 'unknown']);
@@ -152,6 +163,7 @@ export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
   qualityBar: QualityBarSchema.default('balanced'),
+  cacheMode: CacheModeSchema.default('default'),
   contexts: z.array(TaskContextSchema).default([]),
   constraints: z.array(z.string()).default([]),
   policyOverrides: z.record(z.string(), z.unknown()).optional(),
@@ -163,6 +175,7 @@ export const TaskResponseSchema = z.object({
   selectedProvider: ProviderSelectionSchema,
   providerResult: ProviderExecutionResultSchema,
   costEstimate: CostEstimateSchema,
+  cacheInfo: CacheInfoSchema.optional(),
   trace: z.array(PipelineTraceEventSchema),
 });
 
@@ -218,12 +231,15 @@ export const RuntimeConfigSchema = z.object({
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type Transport = z.infer<typeof TransportSchema>;
 export type QualityBar = z.infer<typeof QualityBarSchema>;
+export type CacheMode = z.infer<typeof CacheModeSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
 export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+export type CacheStatus = z.infer<typeof CacheStatusSchema>;
+export type CacheInfo = z.infer<typeof CacheInfoSchema>;
 export type CostEstimateStatus = z.infer<typeof CostEstimateStatusSchema>;
 export type CostEstimateUsageSource = z.infer<typeof CostEstimateUsageSourceSchema>;
 export type CostEstimatePricingSource = z.infer<typeof CostEstimatePricingSourceSchema>;

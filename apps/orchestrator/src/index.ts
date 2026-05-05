@@ -10,7 +10,8 @@ import {
   type OrchestratorRequest,
   type RuntimeConfig,
 } from '@llm-crane/schemas';
-import { runTaskPipeline } from './pipelineRunner';
+import { runTaskWithCache } from './cachedTaskRunner';
+import { resolveTaskCachePath, SQLiteTaskCache, type TaskCacheStore } from './taskCache';
 
 function logOrchestrator(message: string): void {
   console.error(`[llm-crane] ${message}`);
@@ -25,7 +26,12 @@ function createTimestamp(): string {
   return new Date().toISOString();
 }
 
-async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRegistry, request: OrchestratorRequest): Promise<void> {
+async function handleRequest(
+  config: RuntimeConfig,
+  providerRegistry: ProviderRegistry,
+  taskCache: TaskCacheStore,
+  request: OrchestratorRequest,
+): Promise<void> {
   switch (request.type) {
     case 'health':
       writeProtocolEvent({
@@ -42,7 +48,7 @@ async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRe
         writeProtocolEvent({
           id: request.id,
           type: 'taskResult',
-          response: await runTaskPipeline(config, providerRegistry, taskRequest, {
+          response: await runTaskWithCache(config, providerRegistry, taskRequest, taskCache, {
             createTimestamp,
           }),
         });
@@ -57,7 +63,7 @@ async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRe
   }
 }
 
-function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRegistry): void {
+function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRegistry, taskCache: TaskCacheStore): void {
   const reader = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -71,7 +77,7 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
 
     try {
       const request = OrchestratorRequestSchema.parse(JSON.parse(trimmed));
-      void handleRequest(config, providerRegistry, request);
+      void handleRequest(config, providerRegistry, taskCache, request);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Invalid orchestrator request.';
       writeProtocolEvent({
@@ -82,6 +88,7 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
   });
 
   reader.on('close', () => {
+    taskCache.close();
     logOrchestrator('stdin closed; shutting down orchestrator process.');
     process.exit(0);
   });
@@ -91,12 +98,15 @@ export function startOrchestrator(): void {
   try {
     const config = loadRuntimeConfig(process.env);
     const providerRegistry = createProviderRegistry(config.providerKeys);
+    const cachePath = resolveTaskCachePath();
+    const taskCache = new SQLiteTaskCache(cachePath);
 
     logOrchestrator('orchestrator ready');
     logOrchestrator(`simple=${config.defaultSimpleModel} complex=${config.defaultComplexModel}`);
     logOrchestrator(`structurizer prompt chars=${STRUCTURIZER_SYSTEM_PROMPT.length}`);
+    logOrchestrator(`sqlite cache=${cachePath}`);
 
-    attachStdioProtocol(config, providerRegistry);
+    attachStdioProtocol(config, providerRegistry, taskCache);
     writeProtocolEvent({
       type: 'ready',
       transport: 'stdio',

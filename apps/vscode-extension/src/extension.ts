@@ -14,6 +14,7 @@ type TaskPanelInboundMessage = {
   type: 'submitTask';
   value: string;
   contextMode: ContextCaptureMode;
+  ignoreCache: boolean;
 };
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
@@ -23,6 +24,8 @@ type TaskResultView = {
   selectedModel: string;
   selectionReason: string;
   executionPathSummary: string;
+  cacheSummary: string;
+  cacheDetail: string;
   tokenSummary: string;
   latencySummary: string;
   costSummary: string;
@@ -43,7 +46,7 @@ type TaskPanelStatusMessage = {
 let orchestratorManager: OrchestratorProcessManager | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  orchestratorManager = new OrchestratorProcessManager(context.extensionUri.fsPath);
+  orchestratorManager = new OrchestratorProcessManager(context.extensionUri.fsPath, context.globalStorageUri.fsPath);
   let taskPanel: vscode.WebviewPanel | undefined;
 
   const disposable = vscode.commands.registerCommand(RUN_TASK_COMMAND, async () => {
@@ -59,7 +62,7 @@ export function activate(context: vscode.ExtensionContext): void {
     postTaskStatus(panel.webview, {
       status: 'idle',
       headline: 'Task panel ready',
-      detail: 'Choose context mode, then submit task. V0-S08 renders output, selected model, execution path, and trace in result view.',
+      detail: 'Choose context mode, then submit task. Current panel shows output, selected model, cache state, execution path, trace, token usage, latency, and cost.',
     });
 
     const panelDisposables: vscode.Disposable[] = [];
@@ -125,12 +128,12 @@ async function handleTaskPanelMessage(
   postTaskStatus(webview, {
     status: 'running',
     headline: 'Submitting task',
-    detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process.`,
+    detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process${message.ignoreCache ? ' with cache bypass enabled' : ''}.`,
     submittedTask: taskText,
   });
 
   try {
-    const taskRequest = buildTaskRequest(taskText, message.contextMode);
+    const taskRequest = buildTaskRequest(taskText, message.contextMode, message.ignoreCache);
     const { response, readyMode, processId } = await processManager.runTask(taskRequest);
 
     postTaskStatus(webview, {
@@ -163,6 +166,7 @@ function isTaskPanelInboundMessage(message: unknown): message is TaskPanelInboun
     candidate.type === 'submitTask' &&
     typeof candidate.value === 'string' &&
     typeof candidate.contextMode === 'string' &&
+    typeof candidate.ignoreCache === 'boolean' &&
     isContextCaptureMode(candidate.contextMode)
   );
 }
@@ -171,9 +175,10 @@ function isContextCaptureMode(value: string): value is ContextCaptureMode {
   return value === 'manual' || value === 'selection' || value === 'file' || value === 'auto';
 }
 
-function buildTaskRequest(task: string, contextMode: ContextCaptureMode): TaskRequest {
+function buildTaskRequest(task: string, contextMode: ContextCaptureMode, ignoreCache: boolean): TaskRequest {
   return TaskRequestSchema.parse({
     task,
+    cacheMode: ignoreCache ? 'bypass' : 'default',
     contexts: collectTaskContexts(contextMode),
   });
 }
@@ -251,7 +256,7 @@ function getContextModeLabel(contextMode: ContextCaptureMode): string {
 
 function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: ContextCaptureMode): string {
   if (taskRequest.contexts.length === 0) {
-    return `${getContextModeLabel(contextMode)} mode. Manual input only. No editor context attached.`;
+    return `${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Manual input only. No editor context attached.`;
   }
 
   const details = taskRequest.contexts
@@ -267,7 +272,7 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
     })
     .join('; ');
 
-  return `${getContextModeLabel(contextMode)} mode. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
+  return `${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
 }
 
 function formatTaskResponseSummary(
@@ -278,8 +283,9 @@ function formatTaskResponseSummary(
   const processState = readyMode === 'started' ? 'Started local orchestrator' : 'Reused running orchestrator';
   const pidSuffix = processId ? ` pid=${processId}.` : '.';
   const providerStatus = taskResponse.providerResult.status === 'completed' ? 'completed' : 'failed';
+  const cacheStatus = taskResponse.cacheInfo?.status ?? 'unknown';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}).`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}). Cache: ${cacheStatus}.`;
 }
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
@@ -296,6 +302,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
 
   const tokenSummary = formatTokenSummary(taskResponse);
   const latencySummary = formatLatencySummary(taskResponse);
+  const { cacheSummary, cacheDetail } = formatCacheSummary(taskResponse);
   const { costSummary, costDetail } = formatCostSummary(taskResponse);
 
   return {
@@ -306,6 +313,8 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
       taskResponse.trace.length > 0
         ? taskResponse.trace.map((traceEvent) => `${traceEvent.stage}:${traceEvent.status}`).join(' -> ')
         : 'No trace events returned.',
+    cacheSummary,
+    cacheDetail,
     tokenSummary,
     latencySummary,
     costSummary,
@@ -346,6 +355,24 @@ function formatTokenSummary(taskResponse: TaskResponse): string {
 function formatLatencySummary(taskResponse: TaskResponse): string {
   const latencyMs = taskResponse.costEstimate.latencyMs ?? taskResponse.providerResult.latencyMs;
   return latencyMs === undefined ? 'Unknown latency' : `${latencyMs} ms`;
+}
+
+function formatCacheSummary(taskResponse: TaskResponse): { cacheSummary: string; cacheDetail: string } {
+  const cacheInfo = taskResponse.cacheInfo;
+  if (!cacheInfo) {
+    return {
+      cacheSummary: 'No cache metadata',
+      cacheDetail: 'Task response did not include cache annotation.',
+    };
+  }
+
+  const label = cacheInfo.status === 'hit' ? 'Hit' : cacheInfo.status === 'miss' ? 'Miss' : 'Bypassed';
+  const createdAtSuffix = cacheInfo.createdAt ? ` Stored: ${cacheInfo.createdAt}.` : '';
+
+  return {
+    cacheSummary: `${label} · ${cacheInfo.storage}`,
+    cacheDetail: `${cacheInfo.detail}${createdAtSuffix}`,
+  };
 }
 
 function formatCostSummary(taskResponse: TaskResponse): { costSummary: string; costDetail: string } {
@@ -473,6 +500,12 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         gap: 12px;
       }
 
+      .action-buttons {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+
       .hint {
         color: var(--vscode-descriptionForeground);
         font-size: 12px;
@@ -491,6 +524,26 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
       button:hover {
         background: var(--vscode-button-hoverBackground);
+      }
+
+      .secondary-button {
+        color: var(--vscode-button-secondaryForeground);
+        background: var(--vscode-button-secondaryBackground);
+      }
+
+      .secondary-button:hover {
+        background: var(--vscode-button-secondaryHoverBackground);
+      }
+
+      .checkbox-row {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 500;
+      }
+
+      .checkbox-row input {
+        margin: 0;
       }
 
       .status-panel {
@@ -661,11 +714,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S08</p>
+        <p class="eyebrow">V0-S15</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers output text, selected model, execution path, readable trace, token usage, latency, and cost estimate.
+          step covers output text, selected model, cache state, execution path, readable trace, token usage, latency, and cost estimate.
         </p>
       </header>
 
@@ -685,10 +738,18 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <label for="task-input">Task description</label>
           <textarea id="task-input" placeholder="Example: Review current file, explain bug risk, propose small refactor."></textarea>
         </div>
+
+        <label class="checkbox-row" for="ignore-cache">
+          <input id="ignore-cache" type="checkbox" />
+          Ignore cache and force fresh run
+        </label>
       </section>
 
       <div class="actions">
-        <button id="run-task" type="button">Run Task</button>
+        <div class="action-buttons">
+          <button id="run-task" type="button">Run Task</button>
+          <button id="rerun-bypass-cache" type="button" class="secondary-button">Run Without Cache</button>
+        </div>
         <span class="hint">Shortcut: Cmd/Ctrl + Enter</span>
       </div>
 
@@ -725,6 +786,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="meta-value" id="result-path"></p>
           </div>
           <div class="meta-card">
+            <span class="preview-label">Cache</span>
+            <p class="meta-value" id="result-cache"></p>
+            <p class="hint" id="result-cache-detail"></p>
+          </div>
+          <div class="meta-card">
             <span class="preview-label">Usage and latency</span>
             <p class="meta-value" id="result-usage"></p>
             <p class="hint" id="result-latency"></p>
@@ -746,7 +812,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
-          <li>Press <strong>Run Task</strong> and inspect output, model choice, path summary, trace, or failure detail.</li>
+          <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, cache state, model choice, path summary, trace, or failure detail.</li>
         </ol>
       </section>
     </main>
@@ -762,7 +828,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
       const contextModeInput = document.getElementById('context-mode');
       const taskInput = document.getElementById('task-input');
+      const ignoreCacheInput = document.getElementById('ignore-cache');
       const runTaskButton = document.getElementById('run-task');
+      const rerunBypassButton = document.getElementById('rerun-bypass-cache');
       const statusPanel = document.getElementById('status-panel');
       const statusBadge = document.getElementById('status-badge');
       const statusHeadline = document.getElementById('status-headline');
@@ -777,6 +845,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultModel = document.getElementById('result-model');
       const resultReason = document.getElementById('result-reason');
       const resultPath = document.getElementById('result-path');
+      const resultCache = document.getElementById('result-cache');
+      const resultCacheDetail = document.getElementById('result-cache-detail');
       const resultUsage = document.getElementById('result-usage');
       const resultLatency = document.getElementById('result-latency');
       const resultCost = document.getElementById('result-cost');
@@ -812,6 +882,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = resultView.selectedModel;
           resultReason.textContent = resultView.selectionReason;
           resultPath.textContent = resultView.executionPathSummary;
+          resultCache.textContent = resultView.cacheSummary;
+          resultCacheDetail.textContent = resultView.cacheDetail;
           resultUsage.textContent = resultView.tokenSummary;
           resultLatency.textContent = resultView.latencySummary;
           resultCost.textContent = resultView.costSummary;
@@ -830,6 +902,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = '';
           resultReason.textContent = '';
           resultPath.textContent = '';
+          resultCache.textContent = '';
+          resultCacheDetail.textContent = '';
           resultUsage.textContent = '';
           resultLatency.textContent = '';
           resultCost.textContent = '';
@@ -838,14 +912,19 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         }
       }
 
-      function submitTask() {
+      function submitTask(ignoreCacheOverride) {
         const value = taskInput.value;
         const contextMode = contextModeInput.value;
+        const ignoreCache = ignoreCacheOverride ?? ignoreCacheInput.checked;
         setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', value, '', '');
-        vscode.postMessage({ type: 'submitTask', value, contextMode });
+        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache });
       }
 
-      runTaskButton.addEventListener('click', submitTask);
+      runTaskButton.addEventListener('click', () => submitTask());
+      rerunBypassButton.addEventListener('click', () => {
+        ignoreCacheInput.checked = true;
+        submitTask(true);
+      });
       taskInput.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
           submitTask();

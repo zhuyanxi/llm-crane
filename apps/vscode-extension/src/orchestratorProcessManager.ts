@@ -56,7 +56,10 @@ export class OrchestratorProcessManager {
   private disposed = false;
   private requestCounter = 0;
 
-  constructor(private readonly extensionRootPath: string) {}
+  constructor(
+    private readonly extensionRootPath: string,
+    private readonly storageRootPath: string,
+  ) {}
 
   async runTask(taskRequest: TaskRequest): Promise<OrchestratorDispatchResult> {
     const readyMode = await this.ensureReady();
@@ -124,7 +127,10 @@ export class OrchestratorProcessManager {
     const readyPromise = this.createReadyPromise(5000);
     const orchestratorProcess = childProcess.spawn(process.execPath, [orchestratorEntryPath], {
       cwd: path.resolve(this.extensionRootPath, '../..'),
-      env: process.env,
+      env: {
+        ...process.env,
+        LLM_CRANE_CACHE_PATH: this.getCacheDatabasePath(),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -178,6 +184,12 @@ export class OrchestratorProcessManager {
         void vscode.window.showWarningMessage('LLM Crane orchestrator exited unexpectedly. Next task will restart it.');
       }
     });
+  }
+
+  private getCacheDatabasePath(): string {
+    const cacheDirectory = path.join(this.storageRootPath, 'cache');
+    fs.mkdirSync(cacheDirectory, { recursive: true });
+    return path.join(cacheDirectory, 'task-cache.sqlite');
   }
 
   private handleProtocolLine(line: string): void {

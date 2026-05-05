@@ -8,6 +8,7 @@ describe('TaskRequestSchema', () => {
     });
 
     expect(parsed.qualityBar).toBe('balanced');
+    expect(parsed.cacheMode).toBe('default');
     expect(parsed.contexts).toEqual([]);
   });
 
@@ -37,6 +38,7 @@ describe('Orchestrator protocol schemas', () => {
       type: 'runTask',
       request: {
         task: 'Review selection',
+        cacheMode: 'bypass',
         contexts: [
           {
             source: 'selection',
@@ -48,6 +50,11 @@ describe('Orchestrator protocol schemas', () => {
     });
 
     expect(parsed.type).toBe('runTask');
+    if (parsed.type !== 'runTask') {
+      throw new Error('Expected runTask envelope');
+    }
+
+    expect(parsed.request.cacheMode).toBe('bypass');
   });
 
   it('parses taskResult event envelope', () => {
@@ -98,6 +105,13 @@ describe('Orchestrator protocol schemas', () => {
           totalCostUsd: 0.000045,
           latencyMs: 120,
           detail: 'Estimated from provider-reported token usage and local price catalog.',
+        },
+        cacheInfo: {
+          status: 'hit',
+          key: 'cache-key',
+          storage: 'sqlite',
+          createdAt: '2026-05-05T00:00:00.000Z',
+          detail: 'Cache hit; reused prior task response from SQLite store.',
         },
         trace: [
           {
