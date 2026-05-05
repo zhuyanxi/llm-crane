@@ -273,8 +273,9 @@ function formatTaskResponseSummary(
 ): string {
   const processState = readyMode === 'started' ? 'Started local orchestrator' : 'Reused running orchestrator';
   const pidSuffix = processId ? ` pid=${processId}.` : '.';
+  const providerStatus = taskResponse.providerResult.status === 'completed' ? 'completed' : 'failed';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}.`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}).`;
 }
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {

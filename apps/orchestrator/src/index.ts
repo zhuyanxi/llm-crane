@@ -1,6 +1,6 @@
 import * as readline from 'node:readline';
 import { ConfigurationError, loadRuntimeConfig } from '@llm-crane/core';
-import { getProviderIdForModel } from '@llm-crane/providers';
+import { createProviderRegistry, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
   OrchestratorEventSchema,
@@ -12,6 +12,7 @@ import {
   type RuntimeConfig,
   type TaskRequest,
 } from '@llm-crane/schemas';
+import { EXECUTOR_SYSTEM_PROMPT, buildProviderUserPrompt, invokeRoutedProvider } from './providerExecution';
 import { buildRouterScoreInput, routeTask } from './router';
 import { buildStructurizerPrompt, structurizeTaskRequest } from './structurizer';
 
@@ -28,45 +29,21 @@ function createTimestamp(): string {
   return new Date().toISOString();
 }
 
-function summarizeContexts(taskRequest: TaskRequest): string {
-  if (taskRequest.contexts.length === 0) {
-    return 'manual input only';
-  }
-
-  return taskRequest.contexts
-    .map((context) => {
-      const parts: string[] = [context.source];
-      if (context.languageId) {
-        parts.push(context.languageId);
-      }
-      if (context.uri) {
-        parts.push(context.uri);
-      }
-      return parts.join(' / ');
-    })
-    .join('; ');
-}
-
-function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
+async function createTaskResponse(config: RuntimeConfig, providerRegistry: ProviderRegistry, taskRequest: TaskRequest) {
   const structurizerResult = structurizeTaskRequest(taskRequest);
   const routeDecision = routeTask(structurizerResult);
   const routerScoreInput = buildRouterScoreInput(structurizerResult);
   const modelId = routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
   const providerId = getProviderIdForModel(modelId) ?? 'openai';
   const promptText = buildStructurizerPrompt(taskRequest);
+  const providerUserPrompt = buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
+  const providerResult = await invokeRoutedProvider(providerRegistry, modelId, taskRequest, structurizerResult, routeDecision);
 
   return TaskResponseSchema.parse({
-    output: [
-      `Structurizer status: ${structurizerResult.status}`,
-      `Route: ${routeDecision.route} (${routeDecision.status})`,
-      `Route reason: ${routeDecision.reason}`,
-      `Complexity score: ${routeDecision.complexityScore}`,
-      `Model: ${modelId}`,
-      `Task: ${taskRequest.task}`,
-      `Contexts: ${summarizeContexts(taskRequest)}`,
-      '',
-      JSON.stringify({ structurizerResult, routeDecision }, null, 2),
-    ].join('\n'),
+    output:
+      providerResult.status === 'completed'
+        ? providerResult.outputText
+        : `Provider call failed (${providerResult.error?.code ?? 'unknown'}): ${providerResult.error?.message ?? 'Unknown error.'}`,
     routeDecision,
     selectedProvider: {
       providerId,
@@ -74,6 +51,7 @@ function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
       reason: routeDecision.reason,
       confidence: routeDecision.confidence,
     },
+    providerResult,
     trace: [
       {
         stage: 'bootstrap',
@@ -106,16 +84,35 @@ function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
         detail: `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
       },
       {
+        stage: 'provider.prompt',
+        status: 'completed',
+        timestamp: createTimestamp(),
+        detail: `systemChars=${EXECUTOR_SYSTEM_PROMPT.length}; userChars=${providerUserPrompt.length}`,
+      },
+      {
+        stage: 'provider.invoke',
+        status: providerResult.status === 'completed' ? 'completed' : 'failed',
+        timestamp: createTimestamp(),
+        detail:
+          providerResult.status === 'completed'
+            ? `provider=${providerResult.providerId}; model=${providerResult.modelId}; latencyMs=${providerResult.latencyMs ?? -1}`
+            : `provider=${providerResult.providerId}; model=${providerResult.modelId}; error=${providerResult.error?.code ?? 'unknown'}`,
+      },
+      {
         stage: 'response.sent',
         status: 'completed',
         timestamp: createTimestamp(),
-        detail: routeDecision.fallbackReason ?? structurizerResult.fallbackReason ?? 'Structured task and route decision returned to extension.',
+        detail:
+          providerResult.error?.message ??
+          routeDecision.fallbackReason ??
+          structurizerResult.fallbackReason ??
+          'Structured task, route decision, and provider result returned to extension.',
       },
     ],
   });
 }
 
-function handleRequest(config: RuntimeConfig, request: OrchestratorRequest): void {
+async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRegistry, request: OrchestratorRequest): Promise<void> {
   switch (request.type) {
     case 'health':
       writeProtocolEvent({
@@ -132,7 +129,7 @@ function handleRequest(config: RuntimeConfig, request: OrchestratorRequest): voi
         writeProtocolEvent({
           id: request.id,
           type: 'taskResult',
-          response: createTaskResponse(config, taskRequest),
+          response: await createTaskResponse(config, providerRegistry, taskRequest),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Task handling failed.';
@@ -145,7 +142,7 @@ function handleRequest(config: RuntimeConfig, request: OrchestratorRequest): voi
   }
 }
 
-function attachStdioProtocol(config: RuntimeConfig): void {
+function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRegistry): void {
   const reader = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -159,7 +156,7 @@ function attachStdioProtocol(config: RuntimeConfig): void {
 
     try {
       const request = OrchestratorRequestSchema.parse(JSON.parse(trimmed));
-      handleRequest(config, request);
+      void handleRequest(config, providerRegistry, request);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Invalid orchestrator request.';
       writeProtocolEvent({
@@ -178,12 +175,13 @@ function attachStdioProtocol(config: RuntimeConfig): void {
 export function startOrchestrator(): void {
   try {
     const config = loadRuntimeConfig(process.env);
+    const providerRegistry = createProviderRegistry(config.providerKeys);
 
     logOrchestrator('orchestrator ready');
     logOrchestrator(`simple=${config.defaultSimpleModel} complex=${config.defaultComplexModel}`);
     logOrchestrator(`structurizer prompt chars=${STRUCTURIZER_SYSTEM_PROMPT.length}`);
 
-    attachStdioProtocol(config);
+    attachStdioProtocol(config, providerRegistry);
     writeProtocolEvent({
       type: 'ready',
       transport: 'stdio',

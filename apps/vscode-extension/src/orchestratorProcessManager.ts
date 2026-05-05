@@ -60,7 +60,7 @@ export class OrchestratorProcessManager {
 
   async runTask(taskRequest: TaskRequest): Promise<OrchestratorDispatchResult> {
     const readyMode = await this.ensureReady();
-    const event = await this.sendRequest({ type: 'runTask', request: taskRequest }, 'taskResult', 15000);
+    const event = await this.sendRequest({ type: 'runTask', request: taskRequest }, 'taskResult', 45000);
     if (event.type !== 'taskResult') {
       throw new Error(`Expected taskResult, received ${event.type}.`);
     }

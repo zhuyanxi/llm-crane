@@ -76,6 +76,13 @@ describe('Orchestrator protocol schemas', () => {
           modelId: 'gpt-4o-mini',
           reason: 'Lifecycle probe.',
         },
+        providerResult: {
+          status: 'completed',
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          outputText: 'Task received.',
+          latencyMs: 120,
+        },
         trace: [
           {
             stage: 'bootstrap',

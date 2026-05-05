@@ -8,7 +8,7 @@ Local-first, developer-first LLM orchestrator.
 - `apps/orchestrator`: local orchestration process.
 - `packages/core`: shared runtime config, errors, and utility logic.
 - `packages/schemas`: shared Zod schemas and TypeScript contracts.
-- `packages/providers`: provider catalog and model resolution helpers.
+- `packages/providers`: generic model-provider contracts, registry, and HTTP adapters.
 - `packages/prompts`: prompt assets for early pipeline stages.
 
 ## Development commands
@@ -30,6 +30,8 @@ corepack pnpm typecheck
 - Orchestrator debug: run `pnpm --filter @llm-crane/orchestrator build`, then use workspace launch config `LLM Crane: Orchestrator`.
 - Run Task flow currently starts local orchestrator over `stdio` and expects `@llm-crane/orchestrator` build output present.
 - Current pipeline covers Structurizer plus rules-based Router; router selects configured simple vs complex model path and falls back to complex path if routing output is invalid.
+- Current provider layer uses one registry and one `ModelProvider` contract; OpenAI and DeepSeek share OpenAI-compatible adapter path, Anthropic uses messages API adapter, Gemini uses generateContent adapter.
+- Provider failures are normalized into shared error structure and returned in task response instead of crashing protocol flow.
 
 ## Configuration
 

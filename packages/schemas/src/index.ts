@@ -20,6 +20,43 @@ export const ProviderSelectionSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
 });
 
+export const ProviderErrorCodeSchema = z.enum([
+  'auth',
+  'rate_limit',
+  'timeout',
+  'invalid_request',
+  'network',
+  'unsupported_model',
+  'provider_not_configured',
+  'upstream',
+  'unknown',
+]);
+
+export const ProviderErrorSchema = z.object({
+  providerId: ProviderIdSchema,
+  code: ProviderErrorCodeSchema,
+  message: z.string().min(1),
+  retriable: z.boolean(),
+  statusCode: z.number().int().positive().optional(),
+});
+
+export const ProviderUsageSchema = z.object({
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+});
+
+export const ProviderExecutionResultSchema = z.object({
+  status: z.enum(['completed', 'failed']),
+  providerId: ProviderIdSchema,
+  modelId: z.string().min(1),
+  outputText: z.string(),
+  stopReason: z.string().min(1).optional(),
+  usage: ProviderUsageSchema.optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  error: ProviderErrorSchema.optional(),
+});
+
 export const PipelineTraceEventSchema = z.object({
   stage: z.string().min(1),
   status: z.enum(['pending', 'running', 'completed', 'failed', 'skipped']),
@@ -90,6 +127,7 @@ export const TaskResponseSchema = z.object({
   output: z.string().min(1),
   routeDecision: RouteDecisionSchema,
   selectedProvider: ProviderSelectionSchema,
+  providerResult: ProviderExecutionResultSchema,
   trace: z.array(PipelineTraceEventSchema),
 });
 
@@ -148,6 +186,10 @@ export type QualityBar = z.infer<typeof QualityBarSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
+export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
+export type ProviderError = z.infer<typeof ProviderErrorSchema>;
+export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+export type ProviderExecutionResult = z.infer<typeof ProviderExecutionResultSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
 export type StructuredTaskType = z.infer<typeof StructuredTaskTypeSchema>;
 export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;
