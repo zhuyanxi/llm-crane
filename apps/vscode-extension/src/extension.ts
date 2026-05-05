@@ -18,6 +18,14 @@ type TaskPanelInboundMessage = {
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 
+type TaskResultView = {
+  output: string;
+  selectedModel: string;
+  selectionReason: string;
+  executionPathSummary: string;
+  traceEntries: string[];
+};
+
 type TaskPanelStatusMessage = {
   type: 'taskStatus';
   status: TaskPanelStatus;
@@ -25,7 +33,7 @@ type TaskPanelStatusMessage = {
   detail: string;
   submittedTask?: string;
   requestPreview?: string;
-  responsePreview?: string;
+  resultView?: TaskResultView;
 };
 
 let orchestratorManager: OrchestratorProcessManager | undefined;
@@ -47,7 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     postTaskStatus(panel.webview, {
       status: 'idle',
       headline: 'Task panel ready',
-      detail: 'Choose context mode, then submit task. V0-S07 starts local orchestrator on demand, checks health, and exchanges request/response over stdio.',
+      detail: 'Choose context mode, then submit task. V0-S08 renders output, selected model, execution path, and trace in result view.',
     });
 
     const panelDisposables: vscode.Disposable[] = [];
@@ -127,7 +135,7 @@ async function handleTaskPanelMessage(
       detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
       submittedTask: taskText,
       requestPreview: JSON.stringify(taskRequest, null, 2),
-      responsePreview: JSON.stringify(response, null, 2),
+      resultView: createTaskResultView(response),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Unexpected LLM Crane error.';
@@ -267,6 +275,24 @@ function formatTaskResponseSummary(
   const pidSuffix = processId ? ` pid=${processId}.` : '.';
 
   return `${processState}${pidSuffix} Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}.`;
+}
+
+function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
+  const traceEntries = taskResponse.trace.map((traceEvent) => {
+    const detailSuffix = traceEvent.detail ? ` · ${traceEvent.detail}` : '';
+    return `${traceEvent.stage} · ${traceEvent.status}${detailSuffix}`;
+  });
+
+  return {
+    output: taskResponse.output,
+    selectedModel: `${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}`,
+    selectionReason: taskResponse.selectedProvider.reason,
+    executionPathSummary:
+      taskResponse.trace.length > 0
+        ? taskResponse.trace.map((traceEvent) => `${traceEvent.stage}:${traceEvent.status}`).join(' -> ')
+        : 'No trace events returned.',
+    traceEntries,
+  };
 }
 
 function postTaskStatus(webview: vscode.Webview, message: Omit<TaskPanelStatusMessage, 'type'>): void {
@@ -481,6 +507,74 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         overflow: auto;
       }
 
+      .result-panel {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid var(--vscode-panel-border);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-textBlockQuote-background));
+      }
+
+      .result-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .result-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: var(--vscode-badge-background);
+        color: var(--vscode-badge-foreground);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .result-output {
+        margin: 0;
+        padding: 14px;
+        border-radius: 8px;
+        background: var(--vscode-editor-inactiveSelectionBackground);
+        color: var(--vscode-foreground);
+        white-space: pre-wrap;
+        line-height: 1.6;
+      }
+
+      .result-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      .meta-card {
+        display: grid;
+        gap: 6px;
+        padding: 12px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--vscode-editor-background) 90%, var(--vscode-panel-border));
+      }
+
+      .meta-value {
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      .trace-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 18px;
+      }
+
+      .trace-list li {
+        line-height: 1.5;
+      }
+
       .usage {
         display: grid;
         gap: 8px;
@@ -499,11 +593,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S07</p>
+        <p class="eyebrow">V0-S08</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers on-demand orchestrator startup, health check, stdio request dispatch, and response receipt.
+          step covers clear result rendering: output text, selected model, execution path, and readable trace.
         </p>
       </header>
 
@@ -544,9 +638,28 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <span class="preview-label">Validated TaskRequest</span>
           <pre class="request-preview" id="request-preview"></pre>
         </div>
-        <div id="response-preview-block" hidden>
-          <span class="preview-label">Latest TaskResponse</span>
-          <pre class="request-preview" id="response-preview"></pre>
+      </section>
+
+      <section class="result-panel" id="result-panel" hidden>
+        <div class="result-header">
+          <h2>Latest result</h2>
+          <span class="result-chip" id="result-model-chip"></span>
+        </div>
+        <pre class="result-output" id="result-output"></pre>
+        <div class="result-grid">
+          <div class="meta-card">
+            <span class="preview-label">Selected model</span>
+            <p class="meta-value" id="result-model"></p>
+            <p class="hint" id="result-reason"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Execution path</span>
+            <p class="meta-value" id="result-path"></p>
+          </div>
+        </div>
+        <div>
+          <span class="preview-label">Trace</span>
+          <ul class="trace-list" id="trace-list"></ul>
         </div>
       </section>
 
@@ -555,7 +668,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
-          <li>Press <strong>Run Task</strong> and inspect process start, response receipt, or failure status.</li>
+          <li>Press <strong>Run Task</strong> and inspect output, model choice, path summary, trace, or failure detail.</li>
         </ol>
       </section>
     </main>
@@ -580,10 +693,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const submittedTask = document.getElementById('submitted-task');
       const requestPreviewBlock = document.getElementById('request-preview-block');
       const requestPreview = document.getElementById('request-preview');
-      const responsePreviewBlock = document.getElementById('response-preview-block');
-      const responsePreview = document.getElementById('response-preview');
+      const resultPanel = document.getElementById('result-panel');
+      const resultModelChip = document.getElementById('result-model-chip');
+      const resultOutput = document.getElementById('result-output');
+      const resultModel = document.getElementById('result-model');
+      const resultReason = document.getElementById('result-reason');
+      const resultPath = document.getElementById('result-path');
+      const traceList = document.getElementById('trace-list');
 
-      function setStatus(status, headline, detail, taskText, payloadPreview, responsePayloadPreview) {
+      function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
         statusHeadline.textContent = headline;
@@ -605,12 +723,28 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           requestPreview.textContent = '';
         }
 
-        if (responsePayloadPreview && responsePayloadPreview.trim()) {
-          responsePreviewBlock.hidden = false;
-          responsePreview.textContent = responsePayloadPreview;
+        if (resultView) {
+          resultPanel.hidden = false;
+          resultModelChip.textContent = resultView.selectedModel;
+          resultOutput.textContent = resultView.output;
+          resultModel.textContent = resultView.selectedModel;
+          resultReason.textContent = resultView.selectionReason;
+          resultPath.textContent = resultView.executionPathSummary;
+          traceList.replaceChildren(
+            ...resultView.traceEntries.map((entry) => {
+              const item = document.createElement('li');
+              item.textContent = entry;
+              return item;
+            }),
+          );
         } else {
-          responsePreviewBlock.hidden = true;
-          responsePreview.textContent = '';
+          resultPanel.hidden = true;
+          resultModelChip.textContent = '';
+          resultOutput.textContent = '';
+          resultModel.textContent = '';
+          resultReason.textContent = '';
+          resultPath.textContent = '';
+          traceList.replaceChildren();
         }
       }
 
@@ -634,14 +768,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           return;
         }
 
-        setStatus(
-          message.status,
-          message.headline,
-          message.detail,
-          message.submittedTask,
-          message.requestPreview,
-          message.responsePreview,
-        );
+        setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview, message.resultView);
       });
     </script>
   </body>
