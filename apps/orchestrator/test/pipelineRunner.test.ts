@@ -48,6 +48,8 @@ describe('runTaskPipeline', () => {
     expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
     expect(response.providerResult.status).toBe('completed');
     expect(response.output).toBe('simple result');
+    expect(response.trace.some((event) => event.stage === 'request.received' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'response.output' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'completed')).toBe(true);
   });
 
@@ -119,5 +121,48 @@ describe('runTaskPipeline', () => {
     expect(response.trace.some((event) => event.stage === 'executor.prompt' && event.status === 'failed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'skipped')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'failed')).toBe(true);
+  });
+
+  it('records retrying trace state for retriable provider failure', async () => {
+    const providerRegistry = createProviderRegistryStub('unused');
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+      },
+      {
+        invokeRoutedProvider: async () => ({
+          status: 'failed',
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          outputText: '',
+          error: {
+            providerId: 'openai',
+            code: 'rate_limit',
+            message: 'Rate limit exceeded',
+            retriable: true,
+            statusCode: 429,
+          },
+        }),
+      },
+    );
+
+    const retryEvent = response.trace.find((event) => event.stage === 'executor.retry');
+
+    expect(retryEvent?.status).toBe('retrying');
+    expect(retryEvent?.error?.code).toBe('rate_limit');
+    expect(retryEvent?.metadata.retriable).toBe(true);
   });
 });

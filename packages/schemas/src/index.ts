@@ -57,11 +57,22 @@ export const ProviderExecutionResultSchema = z.object({
   error: ProviderErrorSchema.optional(),
 });
 
+export const PipelineTraceStatusSchema = z.enum(['pending', 'running', 'retrying', 'completed', 'failed', 'skipped']);
+
+export const PipelineTraceMetadataValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+export const PipelineTraceErrorSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+});
+
 export const PipelineTraceEventSchema = z.object({
   stage: z.string().min(1),
-  status: z.enum(['pending', 'running', 'completed', 'failed', 'skipped']),
+  status: PipelineTraceStatusSchema,
   timestamp: z.string().datetime(),
   detail: z.string().optional(),
+  metadata: z.record(z.string(), PipelineTraceMetadataValueSchema).default({}),
+  error: PipelineTraceErrorSchema.optional(),
 });
 
 export const StructuredTaskTypeSchema = z.enum(['refactor', 'debug', 'analysis', 'implementation', 'test', 'other']);
@@ -190,6 +201,9 @@ export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type ProviderExecutionResult = z.infer<typeof ProviderExecutionResultSchema>;
+export type PipelineTraceStatus = z.infer<typeof PipelineTraceStatusSchema>;
+export type PipelineTraceMetadataValue = z.infer<typeof PipelineTraceMetadataValueSchema>;
+export type PipelineTraceError = z.infer<typeof PipelineTraceErrorSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
 export type StructuredTaskType = z.infer<typeof StructuredTaskTypeSchema>;
 export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;

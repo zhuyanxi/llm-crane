@@ -31,6 +31,7 @@ corepack pnpm typecheck
 - Run Task flow currently starts local orchestrator over `stdio` and expects `@llm-crane/orchestrator` build output present.
 - Current pipeline covers Structurizer plus rules-based Router; router selects configured simple vs complex model path and falls back to complex path if routing output is invalid.
 - Current pipeline runner executes Structurizer -> Router -> Executor as one task transaction and returns unified `taskResult` payload with trace even when executor stage fails.
+- Trace payload now includes structured `metadata`, optional `error`, and `retrying` status so extension can explain request intake, routing, executor failures, and retryable provider outcomes.
 - Current provider layer uses one registry and one `ModelProvider` contract; OpenAI and DeepSeek share OpenAI-compatible adapter path, Anthropic uses messages API adapter, Gemini uses generateContent adapter.
 - Provider failures are normalized into shared error structure and returned in task response instead of crashing protocol flow.
 

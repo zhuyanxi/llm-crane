@@ -88,6 +88,23 @@ describe('Orchestrator protocol schemas', () => {
             stage: 'bootstrap',
             status: 'completed',
             timestamp: '2026-05-05T00:00:00.000Z',
+            metadata: {
+              requestId: 'req-1',
+              contextCount: 1,
+            },
+          },
+          {
+            stage: 'executor.retry',
+            status: 'retrying',
+            timestamp: '2026-05-05T00:00:01.000Z',
+            detail: 'Provider error marked retriable; automatic retry disabled in V0.',
+            metadata: {
+              retriable: true,
+            },
+            error: {
+              code: 'rate_limit',
+              message: 'Rate limit exceeded',
+            },
           },
         ],
       },

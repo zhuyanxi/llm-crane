@@ -280,8 +280,14 @@ function formatTaskResponseSummary(
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const traceEntries = taskResponse.trace.map((traceEvent) => {
+    const metadataEntries = Object.entries(traceEvent.metadata);
+    const metadataSuffix =
+      metadataEntries.length > 0
+        ? ` · ${metadataEntries.map(([key, value]) => `${key}=${String(value)}`).join(', ')}`
+        : '';
     const detailSuffix = traceEvent.detail ? ` · ${traceEvent.detail}` : '';
-    return `${traceEvent.stage} · ${traceEvent.status}${detailSuffix}`;
+    const errorSuffix = traceEvent.error ? ` · error=${traceEvent.error.code}:${traceEvent.error.message}` : '';
+    return `${traceEvent.stage} · ${traceEvent.status}${metadataSuffix}${detailSuffix}${errorSuffix}`;
   });
 
   return {
