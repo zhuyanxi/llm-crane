@@ -23,6 +23,10 @@ type TaskResultView = {
   selectedModel: string;
   selectionReason: string;
   executionPathSummary: string;
+  tokenSummary: string;
+  latencySummary: string;
+  costSummary: string;
+  costDetail: string;
   traceEntries: string[];
 };
 
@@ -290,6 +294,10 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     return `${traceEvent.stage} · ${traceEvent.status}${metadataSuffix}${detailSuffix}${errorSuffix}`;
   });
 
+  const tokenSummary = formatTokenSummary(taskResponse);
+  const latencySummary = formatLatencySummary(taskResponse);
+  const { costSummary, costDetail } = formatCostSummary(taskResponse);
+
   return {
     output: taskResponse.output,
     selectedModel: `${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}`,
@@ -298,7 +306,60 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
       taskResponse.trace.length > 0
         ? taskResponse.trace.map((traceEvent) => `${traceEvent.stage}:${traceEvent.status}`).join(' -> ')
         : 'No trace events returned.',
+    tokenSummary,
+    latencySummary,
+    costSummary,
+    costDetail,
     traceEntries,
+  };
+}
+
+function formatTokenCount(value: number | undefined): string {
+  return value === undefined ? '?' : value.toLocaleString('en-US');
+}
+
+function formatUsd(value: number | undefined): string {
+  if (value === undefined) {
+    return 'Unknown';
+  }
+
+  if (value < 0.001) {
+    return `$${value.toFixed(6)}`;
+  }
+
+  if (value < 0.01) {
+    return `$${value.toFixed(4)}`;
+  }
+
+  return `$${value.toFixed(2)}`;
+}
+
+function formatTokenSummary(taskResponse: TaskResponse): string {
+  const estimate = taskResponse.costEstimate;
+  if (estimate.usageSource === 'unknown') {
+    return 'Unknown token usage';
+  }
+
+  return `${formatTokenCount(estimate.inputTokens)} in / ${formatTokenCount(estimate.outputTokens)} out / ${formatTokenCount(estimate.totalTokens)} total`;
+}
+
+function formatLatencySummary(taskResponse: TaskResponse): string {
+  const latencyMs = taskResponse.costEstimate.latencyMs ?? taskResponse.providerResult.latencyMs;
+  return latencyMs === undefined ? 'Unknown latency' : `${latencyMs} ms`;
+}
+
+function formatCostSummary(taskResponse: TaskResponse): { costSummary: string; costDetail: string } {
+  const estimate = taskResponse.costEstimate;
+  if (estimate.status === 'unknown') {
+    return {
+      costSummary: 'Unknown cost',
+      costDetail: estimate.detail,
+    };
+  }
+
+  return {
+    costSummary: `${estimate.status === 'exact' ? 'Exact' : 'Estimated'} · ${formatUsd(estimate.totalCostUsd)} USD`,
+    costDetail: estimate.detail,
   };
 }
 
@@ -604,7 +665,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers clear result rendering: output text, selected model, execution path, and readable trace.
+          step covers output text, selected model, execution path, readable trace, token usage, latency, and cost estimate.
         </p>
       </header>
 
@@ -663,6 +724,16 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <span class="preview-label">Execution path</span>
             <p class="meta-value" id="result-path"></p>
           </div>
+          <div class="meta-card">
+            <span class="preview-label">Usage and latency</span>
+            <p class="meta-value" id="result-usage"></p>
+            <p class="hint" id="result-latency"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Cost estimate</span>
+            <p class="meta-value" id="result-cost"></p>
+            <p class="hint" id="result-cost-detail"></p>
+          </div>
         </div>
         <div>
           <span class="preview-label">Trace</span>
@@ -706,6 +777,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultModel = document.getElementById('result-model');
       const resultReason = document.getElementById('result-reason');
       const resultPath = document.getElementById('result-path');
+      const resultUsage = document.getElementById('result-usage');
+      const resultLatency = document.getElementById('result-latency');
+      const resultCost = document.getElementById('result-cost');
+      const resultCostDetail = document.getElementById('result-cost-detail');
       const traceList = document.getElementById('trace-list');
 
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
@@ -737,6 +812,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = resultView.selectedModel;
           resultReason.textContent = resultView.selectionReason;
           resultPath.textContent = resultView.executionPathSummary;
+          resultUsage.textContent = resultView.tokenSummary;
+          resultLatency.textContent = resultView.latencySummary;
+          resultCost.textContent = resultView.costSummary;
+          resultCostDetail.textContent = resultView.costDetail;
           traceList.replaceChildren(
             ...resultView.traceEntries.map((entry) => {
               const item = document.createElement('li');
@@ -751,6 +830,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = '';
           resultReason.textContent = '';
           resultPath.textContent = '';
+          resultUsage.textContent = '';
+          resultLatency.textContent = '';
+          resultCost.textContent = '';
+          resultCostDetail.textContent = '';
           traceList.replaceChildren();
         }
       }

@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProviderInvocationError,
   createProviderRegistry,
+  estimateModelCost,
+  estimateTextTokens,
   getProviderIdForModel,
+  getModelPricing,
   getSupportedModelIds,
   isSupportedModelId,
   type FetchLike,
@@ -29,6 +32,68 @@ describe('model catalog', () => {
     expect(getProviderIdForModel('gemini-1.5-flash')).toBe('gemini');
     expect(isSupportedModelId('unknown-model')).toBe(false);
     expect(getSupportedModelIds()).toContain('gpt-4.1');
+  });
+});
+
+describe('pricing', () => {
+  it('returns pricing for supported model ids', () => {
+    expect(getModelPricing('gpt-4o-mini')).toEqual(
+      expect.objectContaining({
+        modelId: 'gpt-4o-mini',
+        providerId: 'openai',
+        pricingSource: 'catalog',
+      }),
+    );
+    expect(getModelPricing('unknown-model')).toBeUndefined();
+    expect(estimateTextTokens('abcd')).toBe(1);
+  });
+
+  it('uses provider token usage for exact cost estimate', () => {
+    const estimate = estimateModelCost({
+      modelId: 'gpt-4o-mini',
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+      },
+      latencyMs: 350,
+      executionStatus: 'completed',
+    });
+
+    expect(estimate.status).toBe('exact');
+    expect(estimate.usageSource).toBe('provider');
+    expect(estimate.totalCostUsd).toBeCloseTo(0.00045, 6);
+    expect(estimate.latencyMs).toBe(350);
+  });
+
+  it('falls back to estimated usage when provider token usage missing', () => {
+    const estimate = estimateModelCost({
+      modelId: 'claude-3-5-sonnet-latest',
+      promptText: 'A'.repeat(800),
+      outputText: 'B'.repeat(400),
+      executionStatus: 'completed',
+    });
+
+    expect(estimate.status).toBe('estimated');
+    expect(estimate.usageSource).toBe('estimated');
+    expect(estimate.inputTokens).toBeGreaterThan(0);
+    expect(estimate.outputTokens).toBeGreaterThan(0);
+    expect(estimate.totalCostUsd).toBeGreaterThan(0);
+  });
+
+  it('returns unknown when pricing or usage unavailable', () => {
+    const failedEstimate = estimateModelCost({
+      modelId: 'gpt-4o-mini',
+      executionStatus: 'failed',
+    });
+    const unknownPricing = estimateModelCost({
+      modelId: 'unknown-model',
+      promptText: 'hello',
+      outputText: 'world',
+      executionStatus: 'completed',
+    });
+
+    expect(failedEstimate.status).toBe('unknown');
+    expect(unknownPricing.status).toBe('unknown');
   });
 });
 

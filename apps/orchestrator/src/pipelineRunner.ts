@@ -1,6 +1,7 @@
-import { getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
+import { estimateModelCost, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
+  CostEstimateSchema,
   TaskResponseSchema,
   type PipelineTraceEvent,
   type PipelineTraceError,
@@ -95,6 +96,14 @@ function buildTaskOutput(providerResult: ProviderExecutionResult): string {
   }
 
   return `Task execution failed (${providerResult.error?.code ?? 'unknown'}): ${providerResult.error?.message ?? 'Unknown error.'}`;
+}
+
+function buildCostDetail(costEstimate: { totalCostUsd?: number; detail: string }): string {
+  if (costEstimate.totalCostUsd === undefined) {
+    return costEstimate.detail;
+  }
+
+  return `${costEstimate.detail} totalUsd=${costEstimate.totalCostUsd}`;
 }
 
 export async function runTaskPipeline(
@@ -231,9 +240,10 @@ export async function runTaskPipeline(
   });
 
   let providerResult: ProviderExecutionResult;
+  let providerPrompt: string | undefined;
 
   try {
-    const providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
+    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
     trace.add(
       'executor.prompt',
       'completed',
@@ -307,11 +317,33 @@ export async function runTaskPipeline(
     });
   }
 
+  const costEstimate = CostEstimateSchema.parse(
+    estimateModelCost({
+      modelId,
+      usage: providerResult.usage,
+      promptText: providerPrompt,
+      outputText: providerResult.outputText,
+      latencyMs: providerResult.latencyMs,
+      executionStatus: providerResult.status,
+    }),
+  );
+
+  trace.add('response.cost', 'completed', buildCostDetail(costEstimate), {
+    metadata: compactMetadata({
+      costStatus: costEstimate.status,
+      usageSource: costEstimate.usageSource,
+      totalTokens: costEstimate.totalTokens,
+      totalCostUsd: costEstimate.totalCostUsd,
+      latencyMs: costEstimate.latencyMs,
+    }),
+  });
+
   trace.add('response.output', 'completed', 'Task response prepared for extension.', {
     metadata: compactMetadata({
       outputChars: buildTaskOutput(providerResult).length,
       traceCount: trace.list().length + 2,
       providerStatus: providerResult.status,
+      costStatus: costEstimate.status,
     }),
     error: providerResult.error
       ? {
@@ -349,6 +381,7 @@ export async function runTaskPipeline(
       confidence: routeDecision.confidence,
     },
     providerResult,
+    costEstimate,
     trace: trace.list(),
   });
 }

@@ -19,6 +19,11 @@ function createProviderRegistryStub(outputText: string) {
       providerId: 'openai',
       modelId: 'gpt-4o-mini',
       outputText,
+      usage: {
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+      },
       latencyMs: 120,
     }),
   };
@@ -47,8 +52,11 @@ describe('runTaskPipeline', () => {
 
     expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
     expect(response.providerResult.status).toBe('completed');
+    expect(response.costEstimate.status).toBe('exact');
+    expect(response.costEstimate.totalCostUsd).toBeGreaterThan(0);
     expect(response.output).toBe('simple result');
     expect(response.trace.some((event) => event.stage === 'request.received' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'response.cost' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.output' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'completed')).toBe(true);
   });
@@ -87,6 +95,8 @@ describe('runTaskPipeline', () => {
     expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
     expect(response.routeDecision.route).toBe('complex');
     expect(response.providerResult.status).toBe('completed');
+    expect(response.costEstimate.status).toBe('estimated');
+    expect(response.costEstimate.totalTokens).toBeGreaterThan(0);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
   });
 
@@ -117,6 +127,7 @@ describe('runTaskPipeline', () => {
     );
 
     expect(response.providerResult.status).toBe('failed');
+    expect(response.costEstimate.status).toBe('unknown');
     expect(response.output).toContain('Task execution failed');
     expect(response.trace.some((event) => event.stage === 'executor.prompt' && event.status === 'failed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'skipped')).toBe(true);
@@ -164,5 +175,6 @@ describe('runTaskPipeline', () => {
     expect(retryEvent?.status).toBe('retrying');
     expect(retryEvent?.error?.code).toBe('rate_limit');
     expect(retryEvent?.metadata.retriable).toBe(true);
+    expect(response.costEstimate.status).toBe('unknown');
   });
 });

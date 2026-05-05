@@ -83,6 +83,22 @@ describe('Orchestrator protocol schemas', () => {
           outputText: 'Task received.',
           latencyMs: 120,
         },
+        costEstimate: {
+          status: 'exact',
+          currency: 'USD',
+          pricingUnit: 'usd-per-1m-tokens',
+          modelId: 'gpt-4o-mini',
+          usageSource: 'provider',
+          pricingSource: 'catalog',
+          inputTokens: 100,
+          outputTokens: 50,
+          totalTokens: 150,
+          inputCostUsd: 0.000015,
+          outputCostUsd: 0.00003,
+          totalCostUsd: 0.000045,
+          latencyMs: 120,
+          detail: 'Estimated from provider-reported token usage and local price catalog.',
+        },
         trace: [
           {
             stage: 'bootstrap',

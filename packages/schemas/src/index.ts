@@ -46,6 +46,29 @@ export const ProviderUsageSchema = z.object({
   totalTokens: z.number().int().nonnegative().optional(),
 });
 
+export const CostEstimateStatusSchema = z.enum(['exact', 'estimated', 'unknown']);
+
+export const CostEstimateUsageSourceSchema = z.enum(['provider', 'estimated', 'unknown']);
+
+export const CostEstimatePricingSourceSchema = z.enum(['catalog', 'unknown']);
+
+export const CostEstimateSchema = z.object({
+  status: CostEstimateStatusSchema,
+  currency: z.literal('USD'),
+  pricingUnit: z.literal('usd-per-1m-tokens'),
+  modelId: z.string().min(1),
+  usageSource: CostEstimateUsageSourceSchema,
+  pricingSource: CostEstimatePricingSourceSchema,
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+  inputCostUsd: z.number().nonnegative().optional(),
+  outputCostUsd: z.number().nonnegative().optional(),
+  totalCostUsd: z.number().nonnegative().optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  detail: z.string().min(1),
+});
+
 export const ProviderExecutionResultSchema = z.object({
   status: z.enum(['completed', 'failed']),
   providerId: ProviderIdSchema,
@@ -139,6 +162,7 @@ export const TaskResponseSchema = z.object({
   routeDecision: RouteDecisionSchema,
   selectedProvider: ProviderSelectionSchema,
   providerResult: ProviderExecutionResultSchema,
+  costEstimate: CostEstimateSchema,
   trace: z.array(PipelineTraceEventSchema),
 });
 
@@ -200,6 +224,10 @@ export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
 export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+export type CostEstimateStatus = z.infer<typeof CostEstimateStatusSchema>;
+export type CostEstimateUsageSource = z.infer<typeof CostEstimateUsageSourceSchema>;
+export type CostEstimatePricingSource = z.infer<typeof CostEstimatePricingSourceSchema>;
+export type CostEstimate = z.infer<typeof CostEstimateSchema>;
 export type ProviderExecutionResult = z.infer<typeof ProviderExecutionResultSchema>;
 export type PipelineTraceStatus = z.infer<typeof PipelineTraceStatusSchema>;
 export type PipelineTraceMetadataValue = z.infer<typeof PipelineTraceMetadataValueSchema>;
