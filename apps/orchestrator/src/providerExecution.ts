@@ -82,6 +82,18 @@ function toProviderError(modelId: string, error: unknown): ProviderError {
   };
 }
 
+export function createFailedProviderExecutionResult(modelId: string, error: unknown): ProviderExecutionResult {
+  const providerError = toProviderError(modelId, error);
+
+  return ProviderExecutionResultSchema.parse({
+    status: 'failed',
+    providerId: providerError.providerId,
+    modelId,
+    outputText: '',
+    error: providerError,
+  });
+}
+
 function getMaxOutputTokens(routeDecision: RouteDecision): number {
   return routeDecision.route === 'simple' ? SIMPLE_MAX_OUTPUT_TOKENS : COMPLEX_MAX_OUTPUT_TOKENS;
 }
@@ -117,13 +129,6 @@ export async function invokeRoutedProvider(
       latencyMs: result.latencyMs,
     });
   } catch (error) {
-    const providerError = toProviderError(modelId, error);
-    return ProviderExecutionResultSchema.parse({
-      status: 'failed',
-      providerId: providerError.providerId,
-      modelId,
-      outputText: '',
-      error: providerError,
-    });
+    return createFailedProviderExecutionResult(modelId, error);
   }
 }

@@ -1,20 +1,16 @@
 import * as readline from 'node:readline';
 import { ConfigurationError, loadRuntimeConfig } from '@llm-crane/core';
-import { createProviderRegistry, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
+import { createProviderRegistry, type ProviderRegistry } from '@llm-crane/providers';
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
   OrchestratorEventSchema,
   OrchestratorRequestSchema,
   TaskRequestSchema,
-  TaskResponseSchema,
   type OrchestratorEvent,
   type OrchestratorRequest,
   type RuntimeConfig,
-  type TaskRequest,
 } from '@llm-crane/schemas';
-import { EXECUTOR_SYSTEM_PROMPT, buildProviderUserPrompt, invokeRoutedProvider } from './providerExecution';
-import { buildRouterScoreInput, routeTask } from './router';
-import { buildStructurizerPrompt, structurizeTaskRequest } from './structurizer';
+import { runTaskPipeline } from './pipelineRunner';
 
 function logOrchestrator(message: string): void {
   console.error(`[llm-crane] ${message}`);
@@ -27,89 +23,6 @@ function writeProtocolEvent(event: OrchestratorEvent): void {
 
 function createTimestamp(): string {
   return new Date().toISOString();
-}
-
-async function createTaskResponse(config: RuntimeConfig, providerRegistry: ProviderRegistry, taskRequest: TaskRequest) {
-  const structurizerResult = structurizeTaskRequest(taskRequest);
-  const routeDecision = routeTask(structurizerResult);
-  const routerScoreInput = buildRouterScoreInput(structurizerResult);
-  const modelId = routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
-  const providerId = getProviderIdForModel(modelId) ?? 'openai';
-  const promptText = buildStructurizerPrompt(taskRequest);
-  const providerUserPrompt = buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
-  const providerResult = await invokeRoutedProvider(providerRegistry, modelId, taskRequest, structurizerResult, routeDecision);
-
-  return TaskResponseSchema.parse({
-    output:
-      providerResult.status === 'completed'
-        ? providerResult.outputText
-        : `Provider call failed (${providerResult.error?.code ?? 'unknown'}): ${providerResult.error?.message ?? 'Unknown error.'}`,
-    routeDecision,
-    selectedProvider: {
-      providerId,
-      modelId,
-      reason: routeDecision.reason,
-      confidence: routeDecision.confidence,
-    },
-    providerResult,
-    trace: [
-      {
-        stage: 'bootstrap',
-        status: 'completed',
-        timestamp: createTimestamp(),
-        detail: 'Orchestrator process ready.',
-      },
-      {
-        stage: 'structurizer.prompt',
-        status: 'completed',
-        timestamp: createTimestamp(),
-        detail: `Prompt chars=${promptText.length}; system prompt chars=${STRUCTURIZER_SYSTEM_PROMPT.length}`,
-      },
-      {
-        stage: 'structurizer.parse',
-        status: structurizerResult.status === 'structured' ? 'completed' : 'failed',
-        timestamp: createTimestamp(),
-        detail: `taskType=${structurizerResult.structuredTask.taskType}; openQuestions=${structurizerResult.structuredTask.openQuestions.length}`,
-      },
-      {
-        stage: 'router.score-input',
-        status: 'completed',
-        timestamp: createTimestamp(),
-        detail: `chars=${routerScoreInput.length}`,
-      },
-      {
-        stage: 'router.decision',
-        status: routeDecision.status === 'routed' ? 'completed' : 'failed',
-        timestamp: createTimestamp(),
-        detail: `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
-      },
-      {
-        stage: 'provider.prompt',
-        status: 'completed',
-        timestamp: createTimestamp(),
-        detail: `systemChars=${EXECUTOR_SYSTEM_PROMPT.length}; userChars=${providerUserPrompt.length}`,
-      },
-      {
-        stage: 'provider.invoke',
-        status: providerResult.status === 'completed' ? 'completed' : 'failed',
-        timestamp: createTimestamp(),
-        detail:
-          providerResult.status === 'completed'
-            ? `provider=${providerResult.providerId}; model=${providerResult.modelId}; latencyMs=${providerResult.latencyMs ?? -1}`
-            : `provider=${providerResult.providerId}; model=${providerResult.modelId}; error=${providerResult.error?.code ?? 'unknown'}`,
-      },
-      {
-        stage: 'response.sent',
-        status: 'completed',
-        timestamp: createTimestamp(),
-        detail:
-          providerResult.error?.message ??
-          routeDecision.fallbackReason ??
-          structurizerResult.fallbackReason ??
-          'Structured task, route decision, and provider result returned to extension.',
-      },
-    ],
-  });
 }
 
 async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRegistry, request: OrchestratorRequest): Promise<void> {
@@ -129,7 +42,9 @@ async function handleRequest(config: RuntimeConfig, providerRegistry: ProviderRe
         writeProtocolEvent({
           id: request.id,
           type: 'taskResult',
-          response: await createTaskResponse(config, providerRegistry, taskRequest),
+          response: await runTaskPipeline(config, providerRegistry, taskRequest, {
+            createTimestamp,
+          }),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Task handling failed.';
