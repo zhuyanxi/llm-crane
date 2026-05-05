@@ -1,5 +1,10 @@
 import * as readline from 'node:readline';
-import { ConfigurationError, loadRuntimeConfig } from '@llm-crane/core';
+import {
+  ConfigurationError,
+  createDiagnosticError,
+  formatDiagnosticLog,
+  loadRuntimeConfig,
+} from '@llm-crane/core';
 import { createProviderRegistry, type ProviderRegistry } from '@llm-crane/providers';
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
@@ -20,6 +25,18 @@ function logOrchestrator(message: string): void {
 function writeProtocolEvent(event: OrchestratorEvent): void {
   const serialized = JSON.stringify(OrchestratorEventSchema.parse(event));
   process.stdout.write(`${serialized}\n`);
+}
+
+function writeProtocolError(id: string | undefined, error: unknown, fallback: Parameters<typeof createDiagnosticError>[1]): void {
+  const diagnosticError = createDiagnosticError(error, fallback);
+
+  logOrchestrator(`[diagnostic] ${formatDiagnosticLog(diagnosticError.diagnostic)}`);
+  writeProtocolEvent({
+    type: 'error',
+    id,
+    message: diagnosticError.diagnostic.message,
+    diagnostic: diagnosticError.diagnostic,
+  });
 }
 
 function createTimestamp(): string {
@@ -53,11 +70,12 @@ async function handleRequest(
           }),
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Task handling failed.';
-        writeProtocolEvent({
-          id: request.id,
-          type: 'error',
-          message,
+        writeProtocolError(request.id, error, {
+          category: 'internal',
+          code: 'internal.task_request_failed',
+          summary: 'Task request failed',
+          message: 'LLM Crane failed while handling task request.',
+          stage: 'orchestrator.runTask',
         });
       }
   }
@@ -79,10 +97,12 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
       const request = OrchestratorRequestSchema.parse(JSON.parse(trimmed));
       void handleRequest(config, providerRegistry, taskCache, request);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Invalid orchestrator request.';
-      writeProtocolEvent({
-        type: 'error',
-        message: `Invalid orchestrator request: ${message}`,
+      writeProtocolError(undefined, error, {
+        category: 'schema',
+        code: 'schema.invalid_orchestrator_request',
+        summary: 'Invalid orchestrator request',
+        message: 'Incoming orchestrator protocol payload was invalid.',
+        stage: 'orchestrator.protocol',
       });
     }
   });
@@ -113,11 +133,12 @@ export function startOrchestrator(): void {
       detail: 'Orchestrator stdio transport online.',
     });
   } catch (error) {
-    const message = error instanceof ConfigurationError ? error.message : 'Unexpected orchestrator bootstrap error.';
-    logOrchestrator(message);
-    writeProtocolEvent({
-      type: 'error',
-      message,
+    writeProtocolError(undefined, error, {
+      category: error instanceof ConfigurationError ? 'configuration' : 'internal',
+      code: error instanceof ConfigurationError ? 'configuration.bootstrap_failed' : 'internal.bootstrap_failed',
+      summary: error instanceof ConfigurationError ? 'Configuration issue' : 'Orchestrator bootstrap failed',
+      message: error instanceof ConfigurationError ? error.message : 'Unexpected orchestrator bootstrap error.',
+      stage: 'orchestrator.bootstrap',
     });
     process.exitCode = 1;
   }

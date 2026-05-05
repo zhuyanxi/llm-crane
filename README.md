@@ -34,6 +34,7 @@ corepack pnpm typecheck
 - Trace payload now includes structured `metadata`, optional `error`, and `retrying` status so extension can explain request intake, routing, executor failures, and retryable provider outcomes.
 - Task responses now include cost estimate object with USD pricing from local model catalog; provider token usage yields `exact`, text-length fallback yields `estimated`, and failed or unpriced requests remain `unknown`.
 - Current request entry also supports SQLite-backed local response cache keyed by stable task fingerprint; cache hits skip pipeline execution, trace `cache.lookup` and `cache.hit`, and extension can force fresh run with cache bypass.
+- Task responses and protocol errors now carry structured diagnostics so extension can distinguish configuration, provider, schema, and internal failures; extension output channel logs readable `[diagnostic]` lines for local troubleshooting.
 - Current provider layer uses one registry and one `ModelProvider` contract; OpenAI and DeepSeek share OpenAI-compatible adapter path, Anthropic uses messages API adapter, Gemini uses generateContent adapter.
 - Provider failures are normalized into shared error structure and returned in task response instead of crashing protocol flow.
 

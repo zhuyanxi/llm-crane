@@ -1,3 +1,4 @@
+import { createDiagnosticFromError, createProviderDiagnostic } from '@llm-crane/core';
 import { estimateModelCost, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
@@ -6,6 +7,7 @@ import {
   type PipelineTraceEvent,
   type PipelineTraceError,
   type PipelineTraceMetadataValue,
+  type Diagnostic,
   type ProviderExecutionResult,
   type RouteDecision,
   type RuntimeConfig,
@@ -241,6 +243,7 @@ export async function runTaskPipeline(
 
   let providerResult: ProviderExecutionResult;
   let providerPrompt: string | undefined;
+  let diagnostic: Diagnostic | undefined;
 
   try {
     providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
@@ -303,6 +306,13 @@ export async function runTaskPipeline(
   } catch (error) {
     const reason = `Executor stage crashed: ${toErrorMessage(error)}`;
     providerResult = createFailedProviderExecutionResult(modelId, new Error(reason));
+    diagnostic = createDiagnosticFromError(error, {
+      category: 'internal',
+      code: 'internal.executor_prompt_crash',
+      summary: 'Executor stage failed',
+      message: 'LLM Crane failed before provider call completed.',
+      stage: 'executor.prompt',
+    });
     trace.add('executor.prompt', 'failed', reason, {
       error: {
         code: 'executor_prompt_crash',
@@ -327,6 +337,9 @@ export async function runTaskPipeline(
       executionStatus: providerResult.status,
     }),
   );
+  diagnostic = diagnostic ?? (providerResult.status === 'failed' && providerResult.error
+    ? createProviderDiagnostic(providerResult.error, 'executor.invoke')
+    : undefined);
 
   trace.add('response.cost', 'completed', buildCostDetail(costEstimate), {
     metadata: compactMetadata({
@@ -382,6 +395,7 @@ export async function runTaskPipeline(
     },
     providerResult,
     costEstimate,
+    diagnostic,
     trace: trace.list(),
   });
 }

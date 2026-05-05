@@ -53,6 +53,7 @@ describe('runTaskPipeline', () => {
     expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
     expect(response.providerResult.status).toBe('completed');
     expect(response.costEstimate.status).toBe('exact');
+    expect(response.diagnostic).toBeUndefined();
     expect(response.costEstimate.totalCostUsd).toBeGreaterThan(0);
     expect(response.output).toBe('simple result');
     expect(response.trace.some((event) => event.stage === 'request.received' && event.status === 'completed')).toBe(true);
@@ -96,6 +97,7 @@ describe('runTaskPipeline', () => {
     expect(response.routeDecision.route).toBe('complex');
     expect(response.providerResult.status).toBe('completed');
     expect(response.costEstimate.status).toBe('estimated');
+    expect(response.diagnostic).toBeUndefined();
     expect(response.costEstimate.totalTokens).toBeGreaterThan(0);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
   });
@@ -128,6 +130,8 @@ describe('runTaskPipeline', () => {
 
     expect(response.providerResult.status).toBe('failed');
     expect(response.costEstimate.status).toBe('unknown');
+    expect(response.diagnostic?.category).toBe('internal');
+    expect(response.diagnostic?.code).toBe('internal.executor_prompt_crash');
     expect(response.output).toContain('Task execution failed');
     expect(response.trace.some((event) => event.stage === 'executor.prompt' && event.status === 'failed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'skipped')).toBe(true);
@@ -175,6 +179,8 @@ describe('runTaskPipeline', () => {
     expect(retryEvent?.status).toBe('retrying');
     expect(retryEvent?.error?.code).toBe('rate_limit');
     expect(retryEvent?.metadata.retriable).toBe(true);
+    expect(response.diagnostic?.category).toBe('provider');
+    expect(response.diagnostic?.code).toBe('provider.rate_limit');
     expect(response.costEstimate.status).toBe('unknown');
   });
 });

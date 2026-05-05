@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { LLMCraneDiagnosticError } from '@llm-crane/core';
 import { TaskRequestSchema, type TaskContext, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
 import {
   OrchestratorProcessManager,
@@ -24,6 +25,8 @@ type TaskResultView = {
   selectedModel: string;
   selectionReason: string;
   executionPathSummary: string;
+  diagnosticSummary: string;
+  diagnosticDetail: string;
   cacheSummary: string;
   cacheDetail: string;
   tokenSummary: string;
@@ -135,21 +138,32 @@ async function handleTaskPanelMessage(
   try {
     const taskRequest = buildTaskRequest(taskText, message.contextMode, message.ignoreCache);
     const { response, readyMode, processId } = await processManager.runTask(taskRequest);
+    const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
 
     postTaskStatus(webview, {
-      status: 'success',
-      headline: readyMode === 'started' ? 'Orchestrator started and responded' : 'Orchestrator response received',
+      status: hasFailureDiagnostic ? 'error' : 'success',
+      headline: hasFailureDiagnostic
+        ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
+        : readyMode === 'started'
+          ? 'Orchestrator started and responded'
+          : 'Orchestrator response received',
       detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
       submittedTask: taskText,
       requestPreview: JSON.stringify(taskRequest, null, 2),
       resultView: createTaskResultView(response),
     });
   } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Unexpected LLM Crane error.';
+    const headline = error instanceof LLMCraneDiagnosticError ? error.diagnostic.summary : 'Submission blocked';
+    const detail =
+      error instanceof LLMCraneDiagnosticError
+        ? formatDiagnosticDetail(error.diagnostic)
+        : error instanceof Error
+          ? error.message
+          : 'Unexpected LLM Crane error.';
 
     postTaskStatus(webview, {
       status: 'error',
-      headline: 'Submission blocked',
+      headline,
       detail,
       submittedTask: taskText,
     });
@@ -284,8 +298,40 @@ function formatTaskResponseSummary(
   const pidSuffix = processId ? ` pid=${processId}.` : '.';
   const providerStatus = taskResponse.providerResult.status === 'completed' ? 'completed' : 'failed';
   const cacheStatus = taskResponse.cacheInfo?.status ?? 'unknown';
+  const diagnosticSuffix = taskResponse.diagnostic
+    ? ` Diagnostic: ${taskResponse.diagnostic.category}/${taskResponse.diagnostic.code}.`
+    : '';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}). Cache: ${cacheStatus}.`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}). Cache: ${cacheStatus}.${diagnosticSuffix}`;
+}
+
+function formatDiagnosticDetail(diagnostic: TaskResponse['diagnostic']): string {
+  if (!diagnostic) {
+    return 'No task diagnostic.';
+  }
+
+  const parts = [`${diagnostic.category}/${diagnostic.code}`, diagnostic.message];
+  if (diagnostic.providerId) {
+    parts.push(`provider=${diagnostic.providerId}`);
+  }
+  if (diagnostic.retriable !== undefined) {
+    parts.push(`retriable=${diagnostic.retriable}`);
+  }
+  return parts.join(' · ');
+}
+
+function formatTaskDiagnostic(taskResponse: TaskResponse): { diagnosticSummary: string; diagnosticDetail: string } {
+  if (!taskResponse.diagnostic) {
+    return {
+      diagnosticSummary: 'No diagnostic',
+      diagnosticDetail: 'Task completed without classified failure state.',
+    };
+  }
+
+  return {
+    diagnosticSummary: `${taskResponse.diagnostic.summary} · ${taskResponse.diagnostic.category}`,
+    diagnosticDetail: formatDiagnosticDetail(taskResponse.diagnostic),
+  };
 }
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
@@ -302,6 +348,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
 
   const tokenSummary = formatTokenSummary(taskResponse);
   const latencySummary = formatLatencySummary(taskResponse);
+  const { diagnosticSummary, diagnosticDetail } = formatTaskDiagnostic(taskResponse);
   const { cacheSummary, cacheDetail } = formatCacheSummary(taskResponse);
   const { costSummary, costDetail } = formatCostSummary(taskResponse);
 
@@ -313,6 +360,8 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
       taskResponse.trace.length > 0
         ? taskResponse.trace.map((traceEvent) => `${traceEvent.stage}:${traceEvent.status}`).join(' -> ')
         : 'No trace events returned.',
+    diagnosticSummary,
+    diagnosticDetail,
     cacheSummary,
     cacheDetail,
     tokenSummary,
@@ -714,11 +763,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S15</p>
+        <p class="eyebrow">V0-S16</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers output text, selected model, cache state, execution path, readable trace, token usage, latency, and cost estimate.
+          step covers output text, selected model, diagnostic state, cache state, execution path, readable trace, token usage, latency, and cost estimate.
         </p>
       </header>
 
@@ -786,6 +835,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="meta-value" id="result-path"></p>
           </div>
           <div class="meta-card">
+            <span class="preview-label">Diagnostic</span>
+            <p class="meta-value" id="result-diagnostic"></p>
+            <p class="hint" id="result-diagnostic-detail"></p>
+          </div>
+          <div class="meta-card">
             <span class="preview-label">Cache</span>
             <p class="meta-value" id="result-cache"></p>
             <p class="hint" id="result-cache-detail"></p>
@@ -812,7 +866,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
-          <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, cache state, model choice, path summary, trace, or failure detail.</li>
+          <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
         </ol>
       </section>
     </main>
@@ -845,6 +899,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultModel = document.getElementById('result-model');
       const resultReason = document.getElementById('result-reason');
       const resultPath = document.getElementById('result-path');
+      const resultDiagnostic = document.getElementById('result-diagnostic');
+      const resultDiagnosticDetail = document.getElementById('result-diagnostic-detail');
       const resultCache = document.getElementById('result-cache');
       const resultCacheDetail = document.getElementById('result-cache-detail');
       const resultUsage = document.getElementById('result-usage');
@@ -882,6 +938,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = resultView.selectedModel;
           resultReason.textContent = resultView.selectionReason;
           resultPath.textContent = resultView.executionPathSummary;
+          resultDiagnostic.textContent = resultView.diagnosticSummary;
+          resultDiagnosticDetail.textContent = resultView.diagnosticDetail;
           resultCache.textContent = resultView.cacheSummary;
           resultCacheDetail.textContent = resultView.cacheDetail;
           resultUsage.textContent = resultView.tokenSummary;
@@ -902,6 +960,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = '';
           resultReason.textContent = '';
           resultPath.textContent = '';
+          resultDiagnostic.textContent = '';
+          resultDiagnosticDetail.textContent = '';
           resultCache.textContent = '';
           resultCacheDetail.textContent = '';
           resultUsage.textContent = '';

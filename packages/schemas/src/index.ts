@@ -49,6 +49,18 @@ export const ProviderUsageSchema = z.object({
 
 export const CacheStatusSchema = z.enum(['hit', 'miss', 'bypassed']);
 
+export const DiagnosticCategorySchema = z.enum(['configuration', 'provider', 'schema', 'internal']);
+
+export const DiagnosticSchema = z.object({
+  category: DiagnosticCategorySchema,
+  code: z.string().min(1),
+  summary: z.string().min(1),
+  message: z.string().min(1),
+  retriable: z.boolean().optional(),
+  providerId: ProviderIdSchema.optional(),
+  stage: z.string().min(1).optional(),
+});
+
 export const CacheInfoSchema = z.object({
   status: CacheStatusSchema,
   key: z.string().min(1),
@@ -176,6 +188,7 @@ export const TaskResponseSchema = z.object({
   providerResult: ProviderExecutionResultSchema,
   costEstimate: CostEstimateSchema,
   cacheInfo: CacheInfoSchema.optional(),
+  diagnostic: DiagnosticSchema.optional(),
   trace: z.array(PipelineTraceEventSchema),
 });
 
@@ -212,6 +225,7 @@ export const OrchestratorEventSchema = z.discriminatedUnion('type', [
     type: z.literal('error'),
     id: z.string().min(1).optional(),
     message: z.string().min(1),
+    diagnostic: DiagnosticSchema.optional(),
   }),
 ]);
 
@@ -239,6 +253,8 @@ export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type CacheStatus = z.infer<typeof CacheStatusSchema>;
+export type DiagnosticCategory = z.infer<typeof DiagnosticCategorySchema>;
+export type Diagnostic = z.infer<typeof DiagnosticSchema>;
 export type CacheInfo = z.infer<typeof CacheInfoSchema>;
 export type CostEstimateStatus = z.infer<typeof CostEstimateStatusSchema>;
 export type CostEstimateUsageSource = z.infer<typeof CostEstimateUsageSourceSchema>;

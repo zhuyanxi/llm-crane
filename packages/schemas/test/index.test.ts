@@ -113,6 +113,15 @@ describe('Orchestrator protocol schemas', () => {
           createdAt: '2026-05-05T00:00:00.000Z',
           detail: 'Cache hit; reused prior task response from SQLite store.',
         },
+        diagnostic: {
+          category: 'provider',
+          code: 'provider.rate_limit',
+          summary: 'Provider rate limit hit',
+          message: 'Rate limit exceeded',
+          retriable: true,
+          providerId: 'openai',
+          stage: 'executor.invoke',
+        },
         trace: [
           {
             stage: 'bootstrap',
@@ -141,5 +150,22 @@ describe('Orchestrator protocol schemas', () => {
     });
 
     expect(parsed.type).toBe('taskResult');
+  });
+
+  it('parses error event envelope with diagnostic payload', () => {
+    const parsed = OrchestratorEventSchema.parse({
+      type: 'error',
+      id: 'req-2',
+      message: 'Payload failed schema validation at request.task: Too small: expected string to have >=1 characters',
+      diagnostic: {
+        category: 'schema',
+        code: 'schema.invalid_payload',
+        summary: 'Schema validation failed',
+        message: 'Payload failed schema validation at request.task: Too small: expected string to have >=1 characters',
+        stage: 'orchestrator.protocol',
+      },
+    });
+
+    expect(parsed.type).toBe('error');
   });
 });

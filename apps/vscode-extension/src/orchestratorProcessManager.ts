@@ -3,7 +3,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as readline from 'node:readline';
 import * as vscode from 'vscode';
-import { ConfigurationError, SubprocessNotRunningError, loadRuntimeConfig } from '@llm-crane/core';
+import {
+  ConfigurationError,
+  LLMCraneDiagnosticError,
+  SubprocessNotRunningError,
+  createDiagnosticError,
+  formatDiagnosticLog,
+  loadRuntimeConfig,
+} from '@llm-crane/core';
 import {
   OrchestratorEventSchema,
   OrchestratorRequestSchema,
@@ -41,6 +48,10 @@ function toError(error: unknown): Error {
 
 function toErrorMessage(error: unknown): string {
   return toError(error).message;
+}
+
+function formatDiagnosticToast(error: LLMCraneDiagnosticError): string {
+  return `${error.diagnostic.summary}: ${error.diagnostic.message}`;
 }
 
 export class OrchestratorProcessManager {
@@ -112,36 +123,49 @@ export class OrchestratorProcessManager {
   }
 
   private async startProcess(): Promise<OrchestratorReadyMode> {
-    const config = loadRuntimeConfig(process.env);
-    if (config.transport !== 'stdio') {
-      throw new ConfigurationError('IPC transport not yet supported in V0-S07. Set LLM_CRANE_TRANSPORT=stdio.');
+    try {
+      const config = loadRuntimeConfig(process.env);
+      if (config.transport !== 'stdio') {
+        throw new ConfigurationError('IPC transport not yet supported in V0-S07. Set LLM_CRANE_TRANSPORT=stdio.');
+      }
+
+      const orchestratorEntryPath = this.getOrchestratorEntryPath();
+      if (!fs.existsSync(orchestratorEntryPath)) {
+        throw new Error(
+          `Orchestrator build output missing at ${orchestratorEntryPath}. Run corepack pnpm --filter @llm-crane/orchestrator build.`,
+        );
+      }
+
+      const readyPromise = this.createReadyPromise(5000);
+      const orchestratorProcess = childProcess.spawn(process.execPath, [orchestratorEntryPath], {
+        cwd: path.resolve(this.extensionRootPath, '../..'),
+        env: {
+          ...process.env,
+          LLM_CRANE_CACHE_PATH: this.getCacheDatabasePath(),
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      this.expectedStop = false;
+      this.orchestratorProcess = orchestratorProcess;
+      this.attachProcess(orchestratorProcess);
+      this.outputChannel.appendLine(`[process] spawned orchestrator pid=${orchestratorProcess.pid ?? 'unknown'} transport=stdio`);
+
+      await readyPromise;
+      await this.sendHealthCheck();
+      return 'started';
+    } catch (error) {
+      const diagnosticError = createDiagnosticError(error, {
+        category: 'internal',
+        code: 'internal.orchestrator_start_failed',
+        summary: 'Local orchestrator unavailable',
+        message: 'LLM Crane could not start local orchestrator.',
+        stage: 'extension.startProcess',
+      });
+
+      this.outputChannel.appendLine(`[diagnostic] ${formatDiagnosticLog(diagnosticError.diagnostic)}`);
+      throw diagnosticError;
     }
-
-    const orchestratorEntryPath = this.getOrchestratorEntryPath();
-    if (!fs.existsSync(orchestratorEntryPath)) {
-      throw new Error(
-        `Orchestrator build output missing at ${orchestratorEntryPath}. Run corepack pnpm --filter @llm-crane/orchestrator build.`,
-      );
-    }
-
-    const readyPromise = this.createReadyPromise(5000);
-    const orchestratorProcess = childProcess.spawn(process.execPath, [orchestratorEntryPath], {
-      cwd: path.resolve(this.extensionRootPath, '../..'),
-      env: {
-        ...process.env,
-        LLM_CRANE_CACHE_PATH: this.getCacheDatabasePath(),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    this.expectedStop = false;
-    this.orchestratorProcess = orchestratorProcess;
-    this.attachProcess(orchestratorProcess);
-    this.outputChannel.appendLine(`[process] spawned orchestrator pid=${orchestratorProcess.pid ?? 'unknown'} transport=stdio`);
-
-    await readyPromise;
-    await this.sendHealthCheck();
-    return 'started';
   }
 
   private attachProcess(orchestratorProcess: childProcess.ChildProcessWithoutNullStreams): void {
@@ -160,10 +184,18 @@ export class OrchestratorProcessManager {
     });
 
     orchestratorProcess.on('error', (error) => {
-      const normalizedError = toError(error);
-      this.outputChannel.appendLine(`[process] orchestrator error: ${normalizedError.message}`);
-      this.rejectReadyIfPending(normalizedError);
-      this.rejectAllPending(normalizedError);
+      const diagnosticError = createDiagnosticError(error, {
+        category: 'internal',
+        code: 'internal.subprocess_error',
+        summary: 'Local orchestrator process failed',
+        message: 'Local orchestrator process raised runtime error.',
+        stage: 'extension.subprocess',
+      });
+
+      this.outputChannel.appendLine(`[process] orchestrator error: ${diagnosticError.message}`);
+      this.outputChannel.appendLine(`[diagnostic] ${formatDiagnosticLog(diagnosticError.diagnostic)}`);
+      this.rejectReadyIfPending(diagnosticError);
+      this.rejectAllPending(diagnosticError);
     });
 
     orchestratorProcess.on('exit', (code, signal) => {
@@ -173,9 +205,17 @@ export class OrchestratorProcessManager {
       this.outputChannel.appendLine(`[process] ${exitMessage}`);
       this.cleanupProcessState();
 
-      const exitError = new Error(
-        unexpected ? `Orchestrator exited unexpectedly (${exitMessage}).` : `Orchestrator stopped (${exitMessage}).`,
-      );
+      const exitError = createDiagnosticError(new Error(exitMessage), {
+        category: 'internal',
+        code: unexpected ? 'internal.subprocess_exit' : 'internal.subprocess_stopped',
+        summary: unexpected ? 'Local orchestrator exited unexpectedly' : 'Local orchestrator stopped',
+        message: unexpected
+          ? `Orchestrator exited unexpectedly (${exitMessage}).`
+          : `Orchestrator stopped (${exitMessage}).`,
+        stage: 'extension.subprocess',
+      });
+
+      this.outputChannel.appendLine(`[diagnostic] ${formatDiagnosticLog(exitError.diagnostic)}`);
 
       this.rejectReadyIfPending(exitError);
       this.rejectAllPending(exitError);
@@ -212,15 +252,27 @@ export class OrchestratorProcessManager {
       case 'ready':
         this.resolveReadyIfPending();
         return;
-      case 'error':
+      case 'error': {
+        const diagnosticError = event.diagnostic
+          ? new LLMCraneDiagnosticError(event.diagnostic)
+          : createDiagnosticError(new Error(event.message), {
+              category: 'internal',
+              code: 'internal.protocol_error',
+              summary: 'Local orchestrator error',
+              message: event.message,
+              stage: 'extension.protocol',
+            });
+
+        this.outputChannel.appendLine(`[diagnostic] ${formatDiagnosticLog(diagnosticError.diagnostic)}`);
         if (event.id) {
-          this.rejectPendingRequest(event.id, new Error(event.message));
+          this.rejectPendingRequest(event.id, diagnosticError);
           return;
         }
 
-        this.rejectReadyIfPending(new Error(event.message));
-        void vscode.window.showErrorMessage(event.message);
+        this.rejectReadyIfPending(diagnosticError);
+        void vscode.window.showErrorMessage(formatDiagnosticToast(diagnosticError));
         return;
+      }
       case 'healthResult':
       case 'taskResult':
         this.resolvePendingRequest(event);
@@ -241,7 +293,13 @@ export class OrchestratorProcessManager {
   ): Promise<CorrelatedOrchestratorEvent> {
     const orchestratorProcess = this.orchestratorProcess;
     if (!orchestratorProcess?.stdin.writable) {
-      throw new SubprocessNotRunningError('LLM Crane orchestrator');
+      throw createDiagnosticError(new SubprocessNotRunningError('LLM Crane orchestrator'), {
+        category: 'internal',
+        code: 'internal.subprocess_not_running',
+        summary: 'Local orchestrator unavailable',
+        message: 'LLM Crane orchestrator process is not running.',
+        stage: 'extension.protocol',
+      });
     }
 
     const id = `req-${++this.requestCounter}`;
@@ -256,7 +314,16 @@ export class OrchestratorProcessManager {
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`Timed out waiting for ${expectedType} from orchestrator.`));
+        reject(
+          createDiagnosticError(new Error(`Timed out waiting for ${expectedType} from orchestrator.`), {
+            category: 'internal',
+            code: 'internal.orchestrator_timeout',
+            summary: 'Local orchestrator timed out',
+            message: `Timed out waiting for ${expectedType} from orchestrator.`,
+            stage: 'extension.protocol',
+            retriable: true,
+          }),
+        );
       }, timeoutMs);
 
       this.pendingRequests.set(id, {
@@ -273,7 +340,15 @@ export class OrchestratorProcessManager {
 
         clearTimeout(timeout);
         this.pendingRequests.delete(id);
-        reject(toError(error));
+        reject(
+          createDiagnosticError(error, {
+            category: 'internal',
+            code: 'internal.protocol_write_failed',
+            summary: 'Failed to send request to local orchestrator',
+            message: 'Extension could not send request to local orchestrator.',
+            stage: 'extension.protocol',
+          }),
+        );
       });
     });
   }
