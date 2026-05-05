@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemini']);
+export const TransportSchema = z.enum(['stdio', 'ipc']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
 
@@ -40,10 +41,46 @@ export const TaskResponseSchema = z.object({
   trace: z.array(PipelineTraceEventSchema),
 });
 
+export const OrchestratorRequestSchema = z.discriminatedUnion('type', [
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('health'),
+  }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('runTask'),
+    request: TaskRequestSchema,
+  }),
+]);
+
+export const OrchestratorEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('ready'),
+    transport: TransportSchema,
+    detail: z.string().min(1).optional(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('healthResult'),
+    status: z.literal('ok'),
+    detail: z.string().min(1).optional(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('taskResult'),
+    response: TaskResponseSchema,
+  }),
+  z.object({
+    type: z.literal('error'),
+    id: z.string().min(1).optional(),
+    message: z.string().min(1),
+  }),
+]);
+
 export const RuntimeConfigSchema = z.object({
   defaultSimpleModel: z.string().min(1),
   defaultComplexModel: z.string().min(1),
-  transport: z.enum(['stdio', 'ipc']).default('stdio'),
+  transport: TransportSchema.default('stdio'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   providerKeys: z.object({
     openai: z.string().min(1).optional(),
@@ -54,10 +91,13 @@ export const RuntimeConfigSchema = z.object({
 });
 
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
+export type Transport = z.infer<typeof TransportSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
+export type OrchestratorRequest = z.infer<typeof OrchestratorRequestSchema>;
+export type OrchestratorEvent = z.infer<typeof OrchestratorEventSchema>;
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;

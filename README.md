@@ -28,6 +28,7 @@ corepack pnpm typecheck
 
 - VS Code extension debug: build once, then use workspace launch config `LLM Crane: Extension`.
 - Orchestrator debug: run `pnpm --filter @llm-crane/orchestrator build`, then use workspace launch config `LLM Crane: Orchestrator`.
+- Run Task flow currently starts local orchestrator over `stdio` and expects `@llm-crane/orchestrator` build output present.
 
 ## Configuration
 

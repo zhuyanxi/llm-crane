@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RuntimeConfigSchema, TaskRequestSchema } from '../src/index';
+import { OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema } from '../src/index';
 
 describe('TaskRequestSchema', () => {
   it('parses minimal task request', () => {
@@ -27,5 +27,50 @@ describe('RuntimeConfigSchema', () => {
         providerKeys: {},
       }),
     ).toThrow();
+  });
+});
+
+describe('Orchestrator protocol schemas', () => {
+  it('parses runTask request envelope', () => {
+    const parsed = OrchestratorRequestSchema.parse({
+      id: 'req-1',
+      type: 'runTask',
+      request: {
+        task: 'Review selection',
+        contexts: [
+          {
+            source: 'selection',
+            content: 'const value = 1;',
+            languageId: 'typescript',
+          },
+        ],
+      },
+    });
+
+    expect(parsed.type).toBe('runTask');
+  });
+
+  it('parses taskResult event envelope', () => {
+    const parsed = OrchestratorEventSchema.parse({
+      id: 'req-1',
+      type: 'taskResult',
+      response: {
+        output: 'Task received.',
+        selectedProvider: {
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          reason: 'Lifecycle probe.',
+        },
+        trace: [
+          {
+            stage: 'bootstrap',
+            status: 'completed',
+            timestamp: '2026-05-05T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+
+    expect(parsed.type).toBe('taskResult');
   });
 });

@@ -44,6 +44,9 @@ importers:
       '@llm-crane/prompts':
         specifier: workspace:*
         version: link:../../packages/prompts
+      '@llm-crane/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@llm-crane/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

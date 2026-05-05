@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
-import { ConfigurationError, loadRuntimeConfig } from '@llm-crane/core';
-import { TaskRequestSchema, type TaskContext, type TaskRequest } from '@llm-crane/schemas';
+import { TaskRequestSchema, type TaskContext, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
+import {
+  OrchestratorProcessManager,
+  type OrchestratorReadyMode,
+} from './orchestratorProcessManager';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -22,9 +25,13 @@ type TaskPanelStatusMessage = {
   detail: string;
   submittedTask?: string;
   requestPreview?: string;
+  responsePreview?: string;
 };
 
+let orchestratorManager: OrchestratorProcessManager | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
+  orchestratorManager = new OrchestratorProcessManager(context.extensionUri.fsPath);
   let taskPanel: vscode.WebviewPanel | undefined;
 
   const disposable = vscode.commands.registerCommand(RUN_TASK_COMMAND, async () => {
@@ -40,7 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
     postTaskStatus(panel.webview, {
       status: 'idle',
       headline: 'Task panel ready',
-      detail: 'Choose context mode, then submit task. V0-S06 packages manual input plus selection or file context into TaskRequest payload.',
+      detail: 'Choose context mode, then submit task. V0-S07 starts local orchestrator on demand, checks health, and exchanges request/response over stdio.',
     });
 
     const panelDisposables: vscode.Disposable[] = [];
@@ -58,7 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
     panel.webview.onDidReceiveMessage(
       async (message: unknown) => {
-        await handleTaskPanelMessage(panel.webview, message);
+        if (!orchestratorManager) {
+          return;
+        }
+
+        await handleTaskPanelMessage(panel.webview, message, orchestratorManager);
       },
       undefined,
       panelDisposables,
@@ -68,7 +79,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(disposable);
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  await orchestratorManager?.dispose();
+  orchestratorManager = undefined;
+}
 
 function createTaskPanel(): vscode.WebviewPanel {
   return vscode.window.createWebviewPanel(TASK_PANEL_VIEW_TYPE, 'LLM Crane Task', vscode.ViewColumn.Beside, {
@@ -77,7 +91,11 @@ function createTaskPanel(): vscode.WebviewPanel {
   });
 }
 
-async function handleTaskPanelMessage(webview: vscode.Webview, message: unknown): Promise<void> {
+async function handleTaskPanelMessage(
+  webview: vscode.Webview,
+  message: unknown,
+  processManager: OrchestratorProcessManager,
+): Promise<void> {
   if (!isTaskPanelInboundMessage(message)) {
     return;
   }
@@ -95,24 +113,24 @@ async function handleTaskPanelMessage(webview: vscode.Webview, message: unknown)
   postTaskStatus(webview, {
     status: 'running',
     headline: 'Submitting task',
-    detail: `Validating runtime config and collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context for orchestrator handoff.`,
+    detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process.`,
     submittedTask: taskText,
   });
 
   try {
-    const config = loadRuntimeConfig(process.env);
     const taskRequest = buildTaskRequest(taskText, message.contextMode);
+    const { response, readyMode, processId } = await processManager.runTask(taskRequest);
 
     postTaskStatus(webview, {
       status: 'success',
-      headline: 'Task payload ready',
-      detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} Simple model: ${config.defaultSimpleModel}. Complex model: ${config.defaultComplexModel}. Full orchestrator submission lands in V0-S07.`,
+      headline: readyMode === 'started' ? 'Orchestrator started and responded' : 'Orchestrator response received',
+      detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
       submittedTask: taskText,
       requestPreview: JSON.stringify(taskRequest, null, 2),
+      responsePreview: JSON.stringify(response, null, 2),
     });
   } catch (error) {
-    const detail =
-      error instanceof ConfigurationError || error instanceof Error ? error.message : 'Unexpected LLM Crane error.';
+    const detail = error instanceof Error ? error.message : 'Unexpected LLM Crane error.';
 
     postTaskStatus(webview, {
       status: 'error',
@@ -238,6 +256,17 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
     .join('; ');
 
   return `${getContextModeLabel(contextMode)} mode. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
+}
+
+function formatTaskResponseSummary(
+  taskResponse: TaskResponse,
+  readyMode: OrchestratorReadyMode,
+  processId: number | undefined,
+): string {
+  const processState = readyMode === 'started' ? 'Started local orchestrator' : 'Reused running orchestrator';
+  const pidSuffix = processId ? ` pid=${processId}.` : '.';
+
+  return `${processState}${pidSuffix} Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}.`;
 }
 
 function postTaskStatus(webview: vscode.Webview, message: Omit<TaskPanelStatusMessage, 'type'>): void {
@@ -470,11 +499,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S06</p>
+        <p class="eyebrow">V0-S07</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers selection capture, file capture, manual-only mode, payload validation.
+          step covers on-demand orchestrator startup, health check, stdio request dispatch, and response receipt.
         </p>
       </header>
 
@@ -515,6 +544,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <span class="preview-label">Validated TaskRequest</span>
           <pre class="request-preview" id="request-preview"></pre>
         </div>
+        <div id="response-preview-block" hidden>
+          <span class="preview-label">Latest TaskResponse</span>
+          <pre class="request-preview" id="response-preview"></pre>
+        </div>
       </section>
 
       <section class="usage">
@@ -522,7 +555,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
-          <li>Press <strong>Run Task</strong> and inspect running, success, or failure status.</li>
+          <li>Press <strong>Run Task</strong> and inspect process start, response receipt, or failure status.</li>
         </ol>
       </section>
     </main>
@@ -547,8 +580,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const submittedTask = document.getElementById('submitted-task');
       const requestPreviewBlock = document.getElementById('request-preview-block');
       const requestPreview = document.getElementById('request-preview');
+      const responsePreviewBlock = document.getElementById('response-preview-block');
+      const responsePreview = document.getElementById('response-preview');
 
-      function setStatus(status, headline, detail, taskText, payloadPreview) {
+      function setStatus(status, headline, detail, taskText, payloadPreview, responsePayloadPreview) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
         statusHeadline.textContent = headline;
@@ -569,12 +604,20 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           requestPreviewBlock.hidden = true;
           requestPreview.textContent = '';
         }
+
+        if (responsePayloadPreview && responsePayloadPreview.trim()) {
+          responsePreviewBlock.hidden = false;
+          responsePreview.textContent = responsePayloadPreview;
+        } else {
+          responsePreviewBlock.hidden = true;
+          responsePreview.textContent = '';
+        }
       }
 
       function submitTask() {
         const value = taskInput.value;
         const contextMode = contextModeInput.value;
-        setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', value, '');
+        setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', value, '', '');
         vscode.postMessage({ type: 'submitTask', value, contextMode });
       }
 
@@ -591,7 +634,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           return;
         }
 
-        setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview);
+        setStatus(
+          message.status,
+          message.headline,
+          message.detail,
+          message.submittedTask,
+          message.requestPreview,
+          message.responsePreview,
+        );
       });
     </script>
   </body>

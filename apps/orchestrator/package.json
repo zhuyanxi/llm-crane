@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@llm-crane/core": "workspace:*",
+    "@llm-crane/providers": "workspace:*",
     "@llm-crane/prompts": "workspace:*",
     "@llm-crane/schemas": "workspace:*"
   }
