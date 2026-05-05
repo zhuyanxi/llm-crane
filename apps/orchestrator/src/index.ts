@@ -12,6 +12,7 @@ import {
   type RuntimeConfig,
   type TaskRequest,
 } from '@llm-crane/schemas';
+import { buildStructurizerPrompt, structurizeTaskRequest } from './structurizer';
 
 function logOrchestrator(message: string): void {
   console.error(`[llm-crane] ${message}`);
@@ -48,14 +49,22 @@ function summarizeContexts(taskRequest: TaskRequest): string {
 function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
   const modelId = config.defaultSimpleModel;
   const providerId = getProviderIdForModel(modelId) ?? 'openai';
+  const structurizerResult = structurizeTaskRequest(taskRequest);
+  const promptText = buildStructurizerPrompt(taskRequest);
 
   return TaskResponseSchema.parse({
-    output: `Lifecycle probe complete. Task: ${taskRequest.task}\nContexts: ${summarizeContexts(taskRequest)}\nStructurizer prompt chars: ${STRUCTURIZER_SYSTEM_PROMPT.length}`,
+    output: [
+      `Structurizer status: ${structurizerResult.status}`,
+      `Task: ${taskRequest.task}`,
+      `Contexts: ${summarizeContexts(taskRequest)}`,
+      '',
+      JSON.stringify(structurizerResult, null, 2),
+    ].join('\n'),
     selectedProvider: {
       providerId,
       modelId,
-      reason: 'V0-S07 subprocess lifecycle probe over stdio transport.',
-      confidence: 0.2,
+      reason: 'V0-S09 structurizer stage uses configured simple model placeholder until provider adapters land.',
+      confidence: structurizerResult.status === 'structured' ? 0.75 : 0.35,
     },
     trace: [
       {
@@ -65,16 +74,22 @@ function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
         detail: 'Orchestrator process ready.',
       },
       {
-        stage: 'request.received',
+        stage: 'structurizer.prompt',
         status: 'completed',
         timestamp: createTimestamp(),
-        detail: `Contexts=${taskRequest.contexts.length}`,
+        detail: `Prompt chars=${promptText.length}; system prompt chars=${STRUCTURIZER_SYSTEM_PROMPT.length}`,
+      },
+      {
+        stage: 'structurizer.parse',
+        status: structurizerResult.status === 'structured' ? 'completed' : 'failed',
+        timestamp: createTimestamp(),
+        detail: `taskType=${structurizerResult.structuredTask.taskType}; openQuestions=${structurizerResult.structuredTask.openQuestions.length}`,
       },
       {
         stage: 'response.sent',
         status: 'completed',
         timestamp: createTimestamp(),
-        detail: 'Task response returned to extension.',
+        detail: structurizerResult.fallbackReason ?? 'Structured task returned to extension.',
       },
     ],
   });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemini']);
 export const TransportSchema = z.enum(['stdio', 'ipc']);
+export const QualityBarSchema = z.enum(['fast', 'balanced', 'high']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
 
@@ -26,10 +27,39 @@ export const PipelineTraceEventSchema = z.object({
   detail: z.string().optional(),
 });
 
+export const StructuredTaskTypeSchema = z.enum(['refactor', 'debug', 'analysis', 'implementation', 'test', 'other']);
+
+export const StructuredTaskTargetKindSchema = z.enum(['selection', 'file', 'symbol', 'workspace', 'unknown']);
+
+export const StructuredTaskTargetSchema = z.object({
+  kind: StructuredTaskTargetKindSchema,
+  value: z.string().min(1),
+  uri: z.string().optional(),
+});
+
+export const StructuredTaskSchema = z.object({
+  originalTask: z.string().min(1),
+  taskType: StructuredTaskTypeSchema,
+  goal: z.string().min(1),
+  target: StructuredTaskTargetSchema,
+  qualityBar: QualityBarSchema,
+  constraints: z.array(z.string()).default([]),
+  openQuestions: z.array(z.string()).default([]),
+  uncertaintyReasons: z.array(z.string()).default([]),
+  contextSummary: z.array(z.string()).default([]),
+});
+
+export const StructurizerResultSchema = z.object({
+  status: z.enum(['structured', 'fallback']),
+  structuredTask: StructuredTaskSchema,
+  fallbackReason: z.string().min(1).optional(),
+  warnings: z.array(z.string()).default([]),
+});
+
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
-  qualityBar: z.enum(['fast', 'balanced', 'high']).default('balanced'),
+  qualityBar: QualityBarSchema.default('balanced'),
   contexts: z.array(TaskContextSchema).default([]),
   constraints: z.array(z.string()).default([]),
   policyOverrides: z.record(z.string(), z.unknown()).optional(),
@@ -92,10 +122,16 @@ export const RuntimeConfigSchema = z.object({
 
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type Transport = z.infer<typeof TransportSchema>;
+export type QualityBar = z.infer<typeof QualityBarSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
+export type StructuredTaskType = z.infer<typeof StructuredTaskTypeSchema>;
+export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;
+export type StructuredTaskTarget = z.infer<typeof StructuredTaskTargetSchema>;
+export type StructuredTask = z.infer<typeof StructuredTaskSchema>;
+export type StructurizerResult = z.infer<typeof StructurizerResultSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 export type OrchestratorRequest = z.infer<typeof OrchestratorRequestSchema>;
