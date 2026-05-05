@@ -11,6 +11,7 @@ const runtimeConfig: RuntimeConfig = {
     openai: 'sk-openai',
     anthropic: 'sk-anthropic',
   },
+  runtimeProfiles: [],
 };
 
 function createProviderRegistryStub(outputText: string) {

@@ -9,6 +9,7 @@ import {
   type PipelineTraceMetadataValue,
   type Diagnostic,
   type ProviderExecutionResult,
+  type ProviderId,
   type RouteDecision,
   type RuntimeConfig,
   type StructurizerResult,
@@ -90,6 +91,10 @@ function createTraceCollector(createTimestamp: () => string) {
 
 function getModelIdForRoute(config: RuntimeConfig, routeDecision: RouteDecision): string {
   return routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
+}
+
+function resolveProviderIdForModel(providerRegistry: ProviderRegistry, modelId: string): ProviderId | undefined {
+  return providerRegistry.describeModel?.(modelId)?.providerId ?? getProviderIdForModel(modelId);
 }
 
 function buildTaskOutput(providerResult: ProviderExecutionResult): string {
@@ -232,7 +237,7 @@ export async function runTaskPipeline(
   }
 
   const modelId = getModelIdForRoute(config, routeDecision);
-  const providerId = getProviderIdForModel(modelId) ?? 'openai';
+  const providerId = resolveProviderIdForModel(providerRegistry, modelId) ?? 'openai';
   trace.add('executor.start', 'running', 'Executor stage started.', {
     metadata: compactMetadata({
       providerId,
@@ -305,7 +310,7 @@ export async function runTaskPipeline(
     }
   } catch (error) {
     const reason = `Executor stage crashed: ${toErrorMessage(error)}`;
-    providerResult = createFailedProviderExecutionResult(modelId, new Error(reason));
+    providerResult = createFailedProviderExecutionResult(modelId, new Error(reason), providerId);
     diagnostic = createDiagnosticFromError(error, {
       category: 'internal',
       code: 'internal.executor_prompt_crash',
@@ -388,7 +393,7 @@ export async function runTaskPipeline(
     output: buildTaskOutput(providerResult),
     routeDecision,
     selectedProvider: {
-      providerId,
+      providerId: providerResult.providerId,
       modelId,
       reason: routeDecision.reason,
       confidence: routeDecision.confidence,

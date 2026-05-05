@@ -238,4 +238,71 @@ describe('ProviderRegistry', () => {
       }),
     );
   });
+
+  it('supports hosted and local openai-compatible runtimes at same time', async () => {
+    const fetchMock = vi.fn<FetchLike>()
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          choices: [
+            {
+              message: {
+                content: 'hosted result',
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        createJsonResponse(200, {
+          choices: [
+            {
+              message: {
+                content: 'local result',
+              },
+            },
+          ],
+        }),
+      );
+
+    const registry = createProviderRegistry(
+      {
+        apiKeys: { openai: 'sk-openai' },
+        runtimeProfiles: [
+          {
+            runtimeId: 'lmstudio-local',
+            providerId: 'openai',
+            deploymentMode: 'local',
+            apiFamily: 'openai-compatible',
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            models: ['local-qwen2.5-coder'],
+            authMode: 'none',
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    const hostedResult = await registry.invoke({
+      modelId: 'gpt-4o-mini',
+      prompt: 'Use hosted runtime',
+    });
+    const localResult = await registry.invoke({
+      modelId: 'local-qwen2.5-coder',
+      prompt: 'Use local runtime',
+    });
+
+    expect(hostedResult.outputText).toBe('hosted result');
+    expect(localResult.outputText).toBe('local result');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://api.openai.com/v1/chat/completions');
+    expect(fetchMock.mock.calls[0]?.[1].headers?.Authorization).toBe('Bearer sk-openai');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('http://127.0.0.1:1234/v1/chat/completions');
+    expect(fetchMock.mock.calls[1]?.[1].headers?.Authorization).toBeUndefined();
+    expect(registry.describeModel('local-qwen2.5-coder')).toEqual(
+      expect.objectContaining({
+        runtimeId: 'lmstudio-local',
+        providerId: 'openai',
+        deploymentMode: 'local',
+      }),
+    );
+  });
 });

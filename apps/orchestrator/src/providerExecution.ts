@@ -1,4 +1,4 @@
-import { getProviderIdForModel, ProviderInvocationError, type ProviderInvocationRequest } from '@llm-crane/providers';
+import { getProviderIdForModel, ProviderInvocationError, type ProviderId, type ProviderInvocationRequest } from '@llm-crane/providers';
 import {
   ProviderExecutionResultSchema,
   type ProviderError,
@@ -60,8 +60,8 @@ export function buildProviderUserPrompt(
   ].join('\n\n');
 }
 
-function toProviderError(modelId: string, error: unknown): ProviderError {
-  const providerId = getProviderIdForModel(modelId) ?? 'openai';
+function toProviderError(modelId: string, error: unknown, providerIdOverride?: ProviderId): ProviderError {
+  const providerId = providerIdOverride ?? getProviderIdForModel(modelId) ?? 'openai';
 
   if (error instanceof ProviderInvocationError) {
     return {
@@ -82,8 +82,12 @@ function toProviderError(modelId: string, error: unknown): ProviderError {
   };
 }
 
-export function createFailedProviderExecutionResult(modelId: string, error: unknown): ProviderExecutionResult {
-  const providerError = toProviderError(modelId, error);
+export function createFailedProviderExecutionResult(
+  modelId: string,
+  error: unknown,
+  providerIdOverride?: ProviderId,
+): ProviderExecutionResult {
+  const providerError = toProviderError(modelId, error, providerIdOverride);
 
   return ProviderExecutionResultSchema.parse({
     status: 'failed',

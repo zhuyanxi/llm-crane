@@ -1,4 +1,4 @@
-import { getProviderIdForModel, type ProviderId } from './catalog';
+import { getProviderIdForModel, getSupportedModelIdsForProvider, type ProviderApiFamily, type ProviderId } from './catalog';
 import { ProviderInvocationError } from './errors';
 
 export type ProviderInvocationRequest = {
@@ -44,17 +44,57 @@ export type FetchResponseLike = {
 
 export type FetchLike = (url: string, init: FetchRequestInitLike) => Promise<FetchResponseLike>;
 
+export type ProviderDeploymentMode = 'hosted' | 'local';
+
+export type ProviderAuthMode = 'none' | 'bearer' | 'header' | 'query';
+
+export type ProviderRuntimeProfile = {
+  runtimeId: string;
+  providerId: ProviderId;
+  deploymentMode: ProviderDeploymentMode;
+  apiFamily: ProviderApiFamily;
+  baseUrl: string;
+  models: string[];
+  authMode?: ProviderAuthMode;
+  authToken?: string;
+  authHeaderName?: string;
+  authQueryParam?: string;
+  headers?: FetchHeaders;
+  timeoutMs?: number;
+};
+
+export type ResolvedProviderModel = {
+  runtimeId: string;
+  providerId: ProviderId;
+  deploymentMode: ProviderDeploymentMode;
+  apiFamily: ProviderApiFamily;
+  modelId: string;
+};
+
 export interface ModelProvider {
+  readonly runtimeId: string;
   readonly providerId: ProviderId;
+  readonly deploymentMode: ProviderDeploymentMode;
+  readonly apiFamily: ProviderApiFamily;
+  readonly supportedModels: readonly string[];
   supportsModel(modelId: string): boolean;
   invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult>;
 }
 
 type ProviderFactoryContext = {
+  runtimeId: string;
   providerId: ProviderId;
-  apiKey: string;
+  deploymentMode: ProviderDeploymentMode;
+  apiFamily: ProviderApiFamily;
   fetch: FetchLike;
   baseUrl: string;
+  supportedModels: string[];
+  authMode: ProviderAuthMode;
+  authToken?: string;
+  authHeaderName?: string;
+  authQueryParam?: string;
+  headers?: FetchHeaders;
+  timeoutMs?: number;
 };
 
 type OpenAICompatibleProviderConfig = ProviderFactoryContext;
@@ -65,6 +105,14 @@ type GeminiProviderConfig = ProviderFactoryContext;
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+}
+
+function createSupportedModelSet(supportedModels: string[]): Set<string> {
+  return new Set(supportedModels.map((modelId) => modelId.trim()).filter(Boolean));
+}
+
 function getDefaultFetch(): FetchLike {
   const nativeFetch = globalThis.fetch as unknown as FetchLike | undefined;
   if (!nativeFetch) {
@@ -73,13 +121,13 @@ function getDefaultFetch(): FetchLike {
   return nativeFetch;
 }
 
-function assertSupportedProviderModel(providerId: ProviderId, modelId: string): void {
-  if (getProviderIdForModel(modelId) === providerId) {
+function assertSupportedProviderModel(config: ProviderFactoryContext, supportedModelSet: Set<string>, modelId: string): void {
+  if (supportedModelSet.has(modelId)) {
     return;
   }
 
-  throw new ProviderInvocationError(`Model ${modelId} is not supported by provider ${providerId}.`, {
-    providerId,
+  throw new ProviderInvocationError(`Model ${modelId} is not supported by runtime ${config.runtimeId}.`, {
+    providerId: config.providerId,
     code: 'unsupported_model',
     retriable: false,
   });
@@ -199,24 +247,23 @@ async function readJsonPayload(response: FetchResponseLike): Promise<unknown> {
 }
 
 async function postJson(
-  providerId: ProviderId,
-  request: ProviderInvocationRequest,
   config: ProviderFactoryContext,
+  request: ProviderInvocationRequest,
   path: string,
   headers: FetchHeaders,
   body: unknown,
 ): Promise<{ payload: unknown; latencyMs: number }> {
   const abortController = new AbortController();
   const startedAt = Date.now();
-  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = request.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timer = setTimeout(() => {
     abortController.abort();
   }, timeoutMs);
 
   try {
-    const response = await config.fetch(`${config.baseUrl}${path}`, {
+    const response = await config.fetch(buildRequestUrl(config, path), {
       method: 'POST',
-      headers,
+      headers: buildRequestHeaders(config, headers),
       body: JSON.stringify(body),
       signal: abortController.signal,
     });
@@ -225,8 +272,8 @@ async function postJson(
 
     if (!response.ok) {
       const code = mapStatusToErrorCode(response.status);
-      throw new ProviderInvocationError(readErrorMessage(payload, `Provider ${providerId} request failed.`), {
-        providerId,
+      throw new ProviderInvocationError(readErrorMessage(payload, `Provider ${config.providerId} request failed.`), {
+        providerId: config.providerId,
         code,
         retriable: isRetriableCode(code),
         statusCode: response.status,
@@ -246,9 +293,9 @@ async function postJson(
     const message = error instanceof Error ? error.message : 'Provider request failed.';
     const isAbortError = error instanceof Error && error.name === 'AbortError';
     throw new ProviderInvocationError(
-      isAbortError ? `Provider ${providerId} request timed out after ${timeoutMs}ms.` : message,
+      isAbortError ? `Provider ${config.providerId} request timed out after ${timeoutMs}ms.` : message,
       {
-        providerId,
+        providerId: config.providerId,
         code: isAbortError ? 'timeout' : 'network',
         retriable: true,
         cause: error,
@@ -257,6 +304,33 @@ async function postJson(
   } finally {
     clearTimeout(timer);
   }
+}
+
+function buildRequestHeaders(config: ProviderFactoryContext, headers: FetchHeaders): FetchHeaders {
+  const resolvedHeaders: FetchHeaders = {
+    ...headers,
+    ...(config.headers ?? {}),
+  };
+
+  if (config.authMode === 'bearer' && config.authToken) {
+    resolvedHeaders.Authorization = `Bearer ${config.authToken}`;
+  }
+
+  if (config.authMode === 'header' && config.authToken && config.authHeaderName) {
+    resolvedHeaders[config.authHeaderName] = config.authToken;
+  }
+
+  return resolvedHeaders;
+}
+
+function buildRequestUrl(config: ProviderFactoryContext, path: string): string {
+  const url = new URL(`${normalizeBaseUrl(config.baseUrl)}${path}`);
+
+  if (config.authMode === 'query' && config.authToken && config.authQueryParam) {
+    url.searchParams.set(config.authQueryParam, config.authToken);
+  }
+
+  return url.toString();
 }
 
 function extractOpenAICompatibleText(payload: unknown): string {
@@ -327,21 +401,25 @@ function readStopReason(payload: unknown): string | undefined {
 }
 
 export function createOpenAICompatibleProvider(config: OpenAICompatibleProviderConfig): ModelProvider {
+  const supportedModelSet = createSupportedModelSet(config.supportedModels);
+
   return {
+    runtimeId: config.runtimeId,
     providerId: config.providerId,
+    deploymentMode: config.deploymentMode,
+    apiFamily: config.apiFamily,
+    supportedModels: [...supportedModelSet],
     supportsModel(modelId: string): boolean {
-      return getProviderIdForModel(modelId) === config.providerId;
+      return supportedModelSet.has(modelId);
     },
     async invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult> {
-      assertSupportedProviderModel(config.providerId, request.modelId);
+      assertSupportedProviderModel(config, supportedModelSet, request.modelId);
 
       const { payload, latencyMs } = await postJson(
-        config.providerId,
-        request,
         config,
+        request,
         '/chat/completions',
         {
-          Authorization: `Bearer ${config.apiKey}`,
           'Content-Type': 'application/json',
         },
         {
@@ -378,21 +456,25 @@ export function createOpenAICompatibleProvider(config: OpenAICompatibleProviderC
 }
 
 export function createAnthropicProvider(config: AnthropicProviderConfig): ModelProvider {
+  const supportedModelSet = createSupportedModelSet(config.supportedModels);
+
   return {
+    runtimeId: config.runtimeId,
     providerId: config.providerId,
+    deploymentMode: config.deploymentMode,
+    apiFamily: config.apiFamily,
+    supportedModels: [...supportedModelSet],
     supportsModel(modelId: string): boolean {
-      return getProviderIdForModel(modelId) === config.providerId;
+      return supportedModelSet.has(modelId);
     },
     async invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult> {
-      assertSupportedProviderModel(config.providerId, request.modelId);
+      assertSupportedProviderModel(config, supportedModelSet, request.modelId);
 
       const { payload, latencyMs } = await postJson(
-        config.providerId,
-        request,
         config,
+        request,
         '/messages',
         {
-          'x-api-key': config.apiKey,
           'anthropic-version': '2023-06-01',
           'Content-Type': 'application/json',
         },
@@ -438,20 +520,25 @@ export function createAnthropicProvider(config: AnthropicProviderConfig): ModelP
 }
 
 export function createGeminiProvider(config: GeminiProviderConfig): ModelProvider {
+  const supportedModelSet = createSupportedModelSet(config.supportedModels);
+
   return {
+    runtimeId: config.runtimeId,
     providerId: config.providerId,
+    deploymentMode: config.deploymentMode,
+    apiFamily: config.apiFamily,
+    supportedModels: [...supportedModelSet],
     supportsModel(modelId: string): boolean {
-      return getProviderIdForModel(modelId) === config.providerId;
+      return supportedModelSet.has(modelId);
     },
     async invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult> {
-      assertSupportedProviderModel(config.providerId, request.modelId);
+      assertSupportedProviderModel(config, supportedModelSet, request.modelId);
 
       const encodedModelId = encodeURIComponent(request.modelId);
       const { payload, latencyMs } = await postJson(
-        config.providerId,
-        request,
         config,
-        `/models/${encodedModelId}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
+        request,
+        `/models/${encodedModelId}:generateContent`,
         {
           'Content-Type': 'application/json',
         },
@@ -500,6 +587,11 @@ export function createGeminiProvider(config: GeminiProviderConfig): ModelProvide
 
 export type ProviderApiKeys = Partial<Record<ProviderId, string>>;
 
+export type ProviderRegistryConfig = {
+  apiKeys?: ProviderApiKeys;
+  runtimeProfiles?: ProviderRuntimeProfile[];
+};
+
 export type ProviderRegistryOptions = {
   fetch?: FetchLike;
   baseUrls?: Partial<Record<ProviderId, string>>;
@@ -513,7 +605,8 @@ const DEFAULT_BASE_URLS: Record<ProviderId, string> = {
 };
 
 export class ProviderRegistry {
-  private readonly providers = new Map<ProviderId, ModelProvider>();
+  private readonly providers = new Map<string, ModelProvider>();
+  private readonly modelProviders = new Map<string, ModelProvider>();
 
   constructor(initialProviders: ModelProvider[] = []) {
     for (const provider of initialProviders) {
@@ -522,32 +615,72 @@ export class ProviderRegistry {
   }
 
   register(provider: ModelProvider): void {
-    this.providers.set(provider.providerId, provider);
+    if (this.providers.has(provider.runtimeId)) {
+      throw new Error(`Runtime ${provider.runtimeId} is already registered.`);
+    }
+
+    for (const modelId of provider.supportedModels) {
+      const existingProvider = this.modelProviders.get(modelId);
+      if (existingProvider) {
+        throw new Error(
+          `Model ${modelId} is already configured by runtime ${existingProvider.runtimeId}; runtime ${provider.runtimeId} conflicts.`,
+        );
+      }
+    }
+
+    this.providers.set(provider.runtimeId, provider);
+
+    for (const modelId of provider.supportedModels) {
+      this.modelProviders.set(modelId, provider);
+    }
   }
 
   getProvider(providerId: ProviderId): ModelProvider | undefined {
-    return this.providers.get(providerId);
+    return [...this.providers.values()].find((provider) => provider.providerId === providerId);
+  }
+
+  getProviderByRuntimeId(runtimeId: string): ModelProvider | undefined {
+    return this.providers.get(runtimeId);
   }
 
   listProviderIds(): ProviderId[] {
+    return [...new Set([...this.providers.values()].map((provider) => provider.providerId))];
+  }
+
+  listRuntimeIds(): string[] {
     return [...this.providers.keys()];
   }
 
+  describeModel(modelId: string): ResolvedProviderModel | undefined {
+    const provider = this.modelProviders.get(modelId);
+    if (!provider) {
+      return undefined;
+    }
+
+    return {
+      runtimeId: provider.runtimeId,
+      providerId: provider.providerId,
+      deploymentMode: provider.deploymentMode,
+      apiFamily: provider.apiFamily,
+      modelId,
+    };
+  }
+
   async invoke(request: ProviderInvocationRequest): Promise<ProviderInvocationResult> {
-    const providerId = getProviderIdForModel(request.modelId);
-    if (!providerId) {
+    const provider = this.modelProviders.get(request.modelId);
+    if (!provider) {
+      const providerId = getProviderIdForModel(request.modelId);
+      if (providerId) {
+        throw new ProviderInvocationError(`Provider ${providerId} is not configured.`, {
+          providerId,
+          code: 'provider_not_configured',
+          retriable: false,
+        });
+      }
+
       throw new ProviderInvocationError(`Unsupported model id: ${request.modelId}`, {
         providerId: 'openai',
         code: 'unsupported_model',
-        retriable: false,
-      });
-    }
-
-    const provider = this.providers.get(providerId);
-    if (!provider) {
-      throw new ProviderInvocationError(`Provider ${providerId} is not configured.`, {
-        providerId,
-        code: 'provider_not_configured',
         retriable: false,
       });
     }
@@ -556,58 +689,112 @@ export class ProviderRegistry {
   }
 }
 
-export function createProviderRegistry(apiKeys: ProviderApiKeys, options: ProviderRegistryOptions = {}): ProviderRegistry {
+function createRuntimeProfileProvider(profile: ProviderRuntimeProfile, fetch: FetchLike): ModelProvider {
+  const baseConfig = {
+    runtimeId: profile.runtimeId,
+    providerId: profile.providerId,
+    deploymentMode: profile.deploymentMode,
+    apiFamily: profile.apiFamily,
+    fetch,
+    baseUrl: profile.baseUrl,
+    supportedModels: profile.models,
+    authMode: profile.authMode ?? 'none',
+    authToken: profile.authToken,
+    authHeaderName: profile.authHeaderName,
+    authQueryParam: profile.authQueryParam,
+    headers: profile.headers,
+    timeoutMs: profile.timeoutMs,
+  } satisfies ProviderFactoryContext;
+
+  switch (profile.apiFamily) {
+    case 'openai-compatible':
+      return createOpenAICompatibleProvider(baseConfig);
+    case 'anthropic':
+      return createAnthropicProvider(baseConfig);
+    case 'gemini':
+      return createGeminiProvider(baseConfig);
+  }
+}
+
+function createHostedRuntimeProfiles(apiKeys: ProviderApiKeys, baseUrls: Record<ProviderId, string>): ProviderRuntimeProfile[] {
+  const profiles: ProviderRuntimeProfile[] = [];
+
+  if (apiKeys.openai) {
+    profiles.push({
+      runtimeId: 'openai',
+      providerId: 'openai',
+      deploymentMode: 'hosted',
+      apiFamily: 'openai-compatible',
+      baseUrl: baseUrls.openai,
+      models: getSupportedModelIdsForProvider('openai'),
+      authMode: 'bearer',
+      authToken: apiKeys.openai,
+    });
+  }
+
+  if (apiKeys.deepseek) {
+    profiles.push({
+      runtimeId: 'deepseek',
+      providerId: 'deepseek',
+      deploymentMode: 'hosted',
+      apiFamily: 'openai-compatible',
+      baseUrl: baseUrls.deepseek,
+      models: getSupportedModelIdsForProvider('deepseek'),
+      authMode: 'bearer',
+      authToken: apiKeys.deepseek,
+    });
+  }
+
+  if (apiKeys.anthropic) {
+    profiles.push({
+      runtimeId: 'anthropic',
+      providerId: 'anthropic',
+      deploymentMode: 'hosted',
+      apiFamily: 'anthropic',
+      baseUrl: baseUrls.anthropic,
+      models: getSupportedModelIdsForProvider('anthropic'),
+      authMode: 'header',
+      authToken: apiKeys.anthropic,
+      authHeaderName: 'x-api-key',
+    });
+  }
+
+  if (apiKeys.gemini) {
+    profiles.push({
+      runtimeId: 'gemini',
+      providerId: 'gemini',
+      deploymentMode: 'hosted',
+      apiFamily: 'gemini',
+      baseUrl: baseUrls.gemini,
+      models: getSupportedModelIdsForProvider('gemini'),
+      authMode: 'query',
+      authToken: apiKeys.gemini,
+      authQueryParam: 'key',
+    });
+  }
+
+  return profiles;
+}
+
+function isProviderRegistryConfig(value: ProviderRegistryConfig | ProviderApiKeys): value is ProviderRegistryConfig {
+  return 'apiKeys' in value || 'runtimeProfiles' in value;
+}
+
+export function createProviderRegistry(configOrApiKeys: ProviderRegistryConfig | ProviderApiKeys, options: ProviderRegistryOptions = {}): ProviderRegistry {
   const fetch = options.fetch ?? getDefaultFetch();
   const baseUrls = {
     ...DEFAULT_BASE_URLS,
     ...options.baseUrls,
   };
+  const config: ProviderRegistryConfig = isProviderRegistryConfig(configOrApiKeys)
+    ? configOrApiKeys
+    : { apiKeys: configOrApiKeys };
 
-  const providers: ModelProvider[] = [];
-
-  if (apiKeys.openai) {
-    providers.push(
-      createOpenAICompatibleProvider({
-        providerId: 'openai',
-        apiKey: apiKeys.openai,
-        fetch,
-        baseUrl: baseUrls.openai,
-      }),
-    );
-  }
-
-  if (apiKeys.deepseek) {
-    providers.push(
-      createOpenAICompatibleProvider({
-        providerId: 'deepseek',
-        apiKey: apiKeys.deepseek,
-        fetch,
-        baseUrl: baseUrls.deepseek,
-      }),
-    );
-  }
-
-  if (apiKeys.anthropic) {
-    providers.push(
-      createAnthropicProvider({
-        providerId: 'anthropic',
-        apiKey: apiKeys.anthropic,
-        fetch,
-        baseUrl: baseUrls.anthropic,
-      }),
-    );
-  }
-
-  if (apiKeys.gemini) {
-    providers.push(
-      createGeminiProvider({
-        providerId: 'gemini',
-        apiKey: apiKeys.gemini,
-        fetch,
-        baseUrl: baseUrls.gemini,
-      }),
-    );
-  }
+  const runtimeProfiles = [
+    ...createHostedRuntimeProfiles(config.apiKeys ?? {}, baseUrls),
+    ...(config.runtimeProfiles ?? []),
+  ];
+  const providers = runtimeProfiles.map((profile) => createRuntimeProfileProvider(profile, fetch));
 
   return new ProviderRegistry(providers);
 }

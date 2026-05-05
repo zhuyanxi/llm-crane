@@ -4,6 +4,9 @@ export const ProviderIdSchema = z.enum(['openai', 'anthropic', 'deepseek', 'gemi
 export const TransportSchema = z.enum(['stdio', 'ipc']);
 export const QualityBarSchema = z.enum(['fast', 'balanced', 'high']);
 export const CacheModeSchema = z.enum(['default', 'bypass']);
+export const ProviderDeploymentModeSchema = z.enum(['hosted', 'local']);
+export const ProviderApiFamilySchema = z.enum(['openai-compatible', 'anthropic', 'gemini']);
+export const ProviderAuthModeSchema = z.enum(['none', 'bearer', 'header', 'query']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
 
@@ -20,6 +23,47 @@ export const ProviderSelectionSchema = z.object({
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1).optional(),
 });
+
+export const ProviderRuntimeProfileSchema = z
+  .object({
+    runtimeId: z.string().min(1),
+    providerId: ProviderIdSchema,
+    deploymentMode: ProviderDeploymentModeSchema,
+    apiFamily: ProviderApiFamilySchema,
+    baseUrl: z.string().url(),
+    models: z.array(z.string().min(1)).min(1),
+    authMode: ProviderAuthModeSchema.default('none'),
+    authToken: z.string().min(1).optional(),
+    authHeaderName: z.string().min(1).optional(),
+    authQueryParam: z.string().min(1).optional(),
+    headers: z.record(z.string(), z.string()).default({}),
+    timeoutMs: z.number().int().positive().optional(),
+  })
+  .superRefine((profile, context) => {
+    if ((profile.authMode === 'bearer' || profile.authMode === 'header' || profile.authMode === 'query') && !profile.authToken) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `authToken is required when authMode=${profile.authMode}`,
+        path: ['authToken'],
+      });
+    }
+
+    if (profile.authMode === 'header' && !profile.authHeaderName) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'authHeaderName is required when authMode=header',
+        path: ['authHeaderName'],
+      });
+    }
+
+    if (profile.authMode === 'query' && !profile.authQueryParam) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'authQueryParam is required when authMode=query',
+        path: ['authQueryParam'],
+      });
+    }
+  });
 
 export const ProviderErrorCodeSchema = z.enum([
   'auth',
@@ -240,15 +284,20 @@ export const RuntimeConfigSchema = z.object({
     deepseek: z.string().min(1).optional(),
     gemini: z.string().min(1).optional(),
   }),
+  runtimeProfiles: z.array(ProviderRuntimeProfileSchema).default([]),
 });
 
 export type ProviderId = z.infer<typeof ProviderIdSchema>;
 export type Transport = z.infer<typeof TransportSchema>;
 export type QualityBar = z.infer<typeof QualityBarSchema>;
 export type CacheMode = z.infer<typeof CacheModeSchema>;
+export type ProviderDeploymentMode = z.infer<typeof ProviderDeploymentModeSchema>;
+export type ProviderApiFamily = z.infer<typeof ProviderApiFamilySchema>;
+export type ProviderAuthMode = z.infer<typeof ProviderAuthModeSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
+export type ProviderRuntimeProfile = z.infer<typeof ProviderRuntimeProfileSchema>;
 export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;

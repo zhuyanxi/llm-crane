@@ -117,7 +117,10 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
 export function startOrchestrator(): void {
   try {
     const config = loadRuntimeConfig(process.env);
-    const providerRegistry = createProviderRegistry(config.providerKeys);
+    const providerRegistry = createProviderRegistry({
+      apiKeys: config.providerKeys,
+      runtimeProfiles: config.runtimeProfiles,
+    });
     const cachePath = resolveTaskCachePath();
     const taskCache = new SQLiteTaskCache(cachePath);
 

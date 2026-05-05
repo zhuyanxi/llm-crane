@@ -1,21 +1,70 @@
 import { config as loadDotenv } from 'dotenv';
-import { getProviderIdForModel, isSupportedModelId } from '@llm-crane/providers';
-import { RuntimeConfigSchema, type RuntimeConfig } from '@llm-crane/schemas';
+import { getProviderIdForModel, getSupportedModelIdsForProvider, isSupportedModelId } from '@llm-crane/providers';
+import { RuntimeConfigSchema, type ProviderRuntimeProfile, type RuntimeConfig } from '@llm-crane/schemas';
 import { ConfigurationError } from './errors';
 
 loadDotenv();
 
 type EnvSource = Record<string, string | undefined>;
 
-function requireProviderKey(modelId: string, providerKeys: RuntimeConfig['providerKeys']): void {
-  const providerId = getProviderIdForModel(modelId);
+function parseRuntimeProfiles(env: EnvSource): ProviderRuntimeProfile[] {
+  const rawProfiles = env.LLM_CRANE_RUNTIME_PROFILES;
+  if (!rawProfiles) {
+    return [];
+  }
 
+  try {
+    return RuntimeConfigSchema.shape.runtimeProfiles.parse(JSON.parse(rawProfiles));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ConfigurationError(`Invalid LLM_CRANE_RUNTIME_PROFILES: ${message}`);
+  }
+}
+
+function validateConfiguredModelOwnership(
+  providerKeys: RuntimeConfig['providerKeys'],
+  runtimeProfiles: ProviderRuntimeProfile[],
+): void {
+  const configuredOwners = new Map<string, string>();
+
+  const registerOwner = (modelId: string, owner: string) => {
+    const existingOwner = configuredOwners.get(modelId);
+    if (existingOwner) {
+      throw new ConfigurationError(`Model ${modelId} is configured by multiple runtimes: ${existingOwner}, ${owner}`);
+    }
+
+    configuredOwners.set(modelId, owner);
+  };
+
+  for (const [providerId, apiKey] of Object.entries(providerKeys)) {
+    if (!apiKey) {
+      continue;
+    }
+
+    for (const modelId of getSupportedModelIdsForProvider(providerId as keyof RuntimeConfig['providerKeys'])) {
+      registerOwner(modelId, `hosted:${providerId}`);
+    }
+  }
+
+  for (const profile of runtimeProfiles) {
+    for (const modelId of profile.models) {
+      registerOwner(modelId, `runtime:${profile.runtimeId}`);
+    }
+  }
+}
+
+function requireConfiguredModel(modelId: string, providerKeys: RuntimeConfig['providerKeys'], runtimeProfiles: ProviderRuntimeProfile[]): void {
+  if (runtimeProfiles.some((profile) => profile.models.includes(modelId))) {
+    return;
+  }
+
+  const providerId = getProviderIdForModel(modelId);
   if (!providerId) {
     throw new ConfigurationError(`Unsupported model id: ${modelId}`);
   }
 
   if (!providerKeys[providerId]) {
-    throw new ConfigurationError(`Missing API key for configured model: ${modelId}`);
+    throw new ConfigurationError(`Missing provider or runtime configuration for model: ${modelId}`);
   }
 }
 
@@ -29,21 +78,24 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     deepseek: env.DEEPSEEK_API_KEY,
     gemini: env.GEMINI_API_KEY,
   };
+  const runtimeProfiles = parseRuntimeProfiles(env);
 
-  if (Object.values(providerKeys).every((value) => !value)) {
-    throw new ConfigurationError('At least one provider API key must be configured.');
+  if (Object.values(providerKeys).every((value) => !value) && runtimeProfiles.length === 0) {
+    throw new ConfigurationError('At least one provider API key or runtime profile must be configured.');
   }
 
-  if (!isSupportedModelId(defaultSimpleModel)) {
+  validateConfiguredModelOwnership(providerKeys, runtimeProfiles);
+
+  if (!isSupportedModelId(defaultSimpleModel) && !runtimeProfiles.some((profile) => profile.models.includes(defaultSimpleModel))) {
     throw new ConfigurationError(`Invalid simple model name: ${defaultSimpleModel}`);
   }
 
-  if (!isSupportedModelId(defaultComplexModel)) {
+  if (!isSupportedModelId(defaultComplexModel) && !runtimeProfiles.some((profile) => profile.models.includes(defaultComplexModel))) {
     throw new ConfigurationError(`Invalid complex model name: ${defaultComplexModel}`);
   }
 
-  requireProviderKey(defaultSimpleModel, providerKeys);
-  requireProviderKey(defaultComplexModel, providerKeys);
+  requireConfiguredModel(defaultSimpleModel, providerKeys, runtimeProfiles);
+  requireConfiguredModel(defaultComplexModel, providerKeys, runtimeProfiles);
 
   return RuntimeConfigSchema.parse({
     defaultSimpleModel,
@@ -51,5 +103,6 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     transport: env.LLM_CRANE_TRANSPORT ?? 'stdio',
     logLevel: env.LLM_CRANE_LOG_LEVEL ?? 'info',
     providerKeys,
+    runtimeProfiles,
   });
 }

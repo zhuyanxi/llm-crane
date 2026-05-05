@@ -14,6 +14,7 @@ const runtimeConfig: RuntimeConfig = {
     openai: 'sk-openai',
     anthropic: 'sk-anthropic',
   },
+  runtimeProfiles: [],
 };
 
 const baseTaskRequest: TaskRequest = {

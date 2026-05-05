@@ -1,11 +1,12 @@
 export type ProviderId = 'openai' | 'anthropic' | 'deepseek' | 'gemini';
+export type ProviderApiFamily = 'openai-compatible' | 'anthropic' | 'gemini';
 
 export type ModelCapabilityTier = 'low-cost' | 'high-capability';
 
 export type ModelDescriptor = {
   providerId: ProviderId;
   capabilityTier: ModelCapabilityTier;
-  apiFamily: 'openai-compatible' | 'anthropic' | 'gemini';
+  apiFamily: ProviderApiFamily;
 };
 
 const MODEL_CATALOG: Record<string, ModelDescriptor> = {
@@ -51,6 +52,12 @@ export function getProviderIdForModel(modelId: string): ProviderId | undefined {
 
 export function getSupportedModelIds(): string[] {
   return Object.keys(MODEL_CATALOG);
+}
+
+export function getSupportedModelIdsForProvider(providerId: ProviderId): string[] {
+  return Object.entries(MODEL_CATALOG)
+    .filter(([, descriptor]) => descriptor.providerId === providerId)
+    .map(([modelId]) => modelId);
 }
 
 export function getModelDescriptor(modelId: string): ModelDescriptor | undefined {

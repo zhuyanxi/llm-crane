@@ -20,7 +20,7 @@ Prerequisites:
 
 - Node.js `>=22.0.0`
 - VS Code `^1.100.0`
-- At least one provider API key
+- At least one hosted provider API key or one configured runtime profile
 
 Install and build from repo root:
 
@@ -36,7 +36,7 @@ Create local config:
 cp .env.example .env
 ```
 
-Set at least one provider key in `.env`, then set default models if you want to override defaults.
+Set at least one hosted provider key or `LLM_CRANE_RUNTIME_PROFILES` in `.env`, then set default models if you want to override defaults.
 
 Run inside VS Code:
 
@@ -62,11 +62,28 @@ Routing and runtime:
 
 - `LLM_CRANE_SIMPLE_MODEL`: default simple-path model
 - `LLM_CRANE_COMPLEX_MODEL`: default complex-path model
+- `LLM_CRANE_RUNTIME_PROFILES`: optional JSON array of runtime descriptors for hosted or local runtimes; each entry declares `runtimeId`, `providerId`, `deploymentMode`, `apiFamily`, `baseUrl`, `models`, and optional auth fields
 - `LLM_CRANE_CACHE_PATH`: optional SQLite file path; default is extension local storage path
 - `LLM_CRANE_TRANSPORT`: current V0 transport, `stdio`
 - `LLM_CRANE_LOG_LEVEL`: runtime log level
 
-Provider keys:
+Runtime profile example:
+
+```json
+[
+	{
+		"runtimeId": "lmstudio-local",
+		"providerId": "openai",
+		"deploymentMode": "local",
+		"apiFamily": "openai-compatible",
+		"baseUrl": "http://127.0.0.1:1234/v1",
+		"models": ["local-qwen2.5-coder"],
+		"authMode": "none"
+	}
+]
+```
+
+Hosted provider keys:
 
 - `OPENAI_API_KEY`
 - `ANTHROPIC_API_KEY`
