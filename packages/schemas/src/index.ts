@@ -56,6 +56,27 @@ export const StructurizerResultSchema = z.object({
   warnings: z.array(z.string()).default([]),
 });
 
+export const RouteTierSchema = z.enum(['simple', 'complex']);
+
+export const RouteStrategySchema = z.enum(['rules-v1', 'safe-fallback']);
+
+export const RouteScoreFactorSchema = z.object({
+  factor: z.string().min(1),
+  score: z.number().int().min(0).max(4),
+  detail: z.string().min(1),
+});
+
+export const RouteDecisionSchema = z.object({
+  status: z.enum(['routed', 'fallback']),
+  route: RouteTierSchema,
+  reason: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  complexityScore: z.number().int().min(0).max(20),
+  scoreBreakdown: z.array(RouteScoreFactorSchema).default([]),
+  strategy: RouteStrategySchema.default('rules-v1'),
+  fallbackReason: z.string().min(1).optional(),
+});
+
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
@@ -67,6 +88,7 @@ export const TaskRequestSchema = z.object({
 
 export const TaskResponseSchema = z.object({
   output: z.string().min(1),
+  routeDecision: RouteDecisionSchema,
   selectedProvider: ProviderSelectionSchema,
   trace: z.array(PipelineTraceEventSchema),
 });
@@ -132,6 +154,10 @@ export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSc
 export type StructuredTaskTarget = z.infer<typeof StructuredTaskTargetSchema>;
 export type StructuredTask = z.infer<typeof StructuredTaskSchema>;
 export type StructurizerResult = z.infer<typeof StructurizerResultSchema>;
+export type RouteTier = z.infer<typeof RouteTierSchema>;
+export type RouteStrategy = z.infer<typeof RouteStrategySchema>;
+export type RouteScoreFactor = z.infer<typeof RouteScoreFactorSchema>;
+export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 export type OrchestratorRequest = z.infer<typeof OrchestratorRequestSchema>;

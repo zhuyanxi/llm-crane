@@ -88,6 +88,15 @@ function detectTarget(taskRequest: TaskRequest): StructuredTaskTarget {
     };
   }
 
+  const workspaceContext = taskRequest.contexts.find((context) => context.source === 'workspace');
+  if (workspaceContext) {
+    return {
+      kind: 'workspace',
+      value: workspaceContext.uri ?? 'workspace',
+      uri: workspaceContext.uri,
+    };
+  }
+
   const fileContext = taskRequest.contexts.find((context) => context.source === 'file');
   if (fileContext) {
     return {

@@ -56,6 +56,21 @@ describe('Orchestrator protocol schemas', () => {
       type: 'taskResult',
       response: {
         output: 'Task received.',
+        routeDecision: {
+          status: 'routed',
+          route: 'simple',
+          reason: 'Narrow selection with low ambiguity.',
+          confidence: 0.82,
+          complexityScore: 2,
+          scoreBreakdown: [
+            {
+              factor: 'target-scope',
+              score: 0,
+              detail: 'Selection target keeps task narrow.',
+            },
+          ],
+          strategy: 'rules-v1',
+        },
         selectedProvider: {
           providerId: 'openai',
           modelId: 'gpt-4o-mini',

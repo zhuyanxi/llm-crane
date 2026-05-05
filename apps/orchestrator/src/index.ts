@@ -12,6 +12,7 @@ import {
   type RuntimeConfig,
   type TaskRequest,
 } from '@llm-crane/schemas';
+import { buildRouterScoreInput, routeTask } from './router';
 import { buildStructurizerPrompt, structurizeTaskRequest } from './structurizer';
 
 function logOrchestrator(message: string): void {
@@ -47,24 +48,31 @@ function summarizeContexts(taskRequest: TaskRequest): string {
 }
 
 function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
-  const modelId = config.defaultSimpleModel;
-  const providerId = getProviderIdForModel(modelId) ?? 'openai';
   const structurizerResult = structurizeTaskRequest(taskRequest);
+  const routeDecision = routeTask(structurizerResult);
+  const routerScoreInput = buildRouterScoreInput(structurizerResult);
+  const modelId = routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
+  const providerId = getProviderIdForModel(modelId) ?? 'openai';
   const promptText = buildStructurizerPrompt(taskRequest);
 
   return TaskResponseSchema.parse({
     output: [
       `Structurizer status: ${structurizerResult.status}`,
+      `Route: ${routeDecision.route} (${routeDecision.status})`,
+      `Route reason: ${routeDecision.reason}`,
+      `Complexity score: ${routeDecision.complexityScore}`,
+      `Model: ${modelId}`,
       `Task: ${taskRequest.task}`,
       `Contexts: ${summarizeContexts(taskRequest)}`,
       '',
-      JSON.stringify(structurizerResult, null, 2),
+      JSON.stringify({ structurizerResult, routeDecision }, null, 2),
     ].join('\n'),
+    routeDecision,
     selectedProvider: {
       providerId,
       modelId,
-      reason: 'V0-S09 structurizer stage uses configured simple model placeholder until provider adapters land.',
-      confidence: structurizerResult.status === 'structured' ? 0.75 : 0.35,
+      reason: routeDecision.reason,
+      confidence: routeDecision.confidence,
     },
     trace: [
       {
@@ -86,10 +94,22 @@ function createTaskResponse(config: RuntimeConfig, taskRequest: TaskRequest) {
         detail: `taskType=${structurizerResult.structuredTask.taskType}; openQuestions=${structurizerResult.structuredTask.openQuestions.length}`,
       },
       {
+        stage: 'router.score-input',
+        status: 'completed',
+        timestamp: createTimestamp(),
+        detail: `chars=${routerScoreInput.length}`,
+      },
+      {
+        stage: 'router.decision',
+        status: routeDecision.status === 'routed' ? 'completed' : 'failed',
+        timestamp: createTimestamp(),
+        detail: `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
+      },
+      {
         stage: 'response.sent',
         status: 'completed',
         timestamp: createTimestamp(),
-        detail: structurizerResult.fallbackReason ?? 'Structured task returned to extension.',
+        detail: routeDecision.fallbackReason ?? structurizerResult.fallbackReason ?? 'Structured task and route decision returned to extension.',
       },
     ],
   });
