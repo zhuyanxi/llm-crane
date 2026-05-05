@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@llm-crane/core": "workspace:*"
+    "@llm-crane/core": "workspace:*",
+    "@llm-crane/schemas": "workspace:*"
   },
   "devDependencies": {
     "@types/vscode": "^1.100.0"

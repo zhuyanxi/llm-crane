@@ -1,12 +1,16 @@
 import * as vscode from 'vscode';
 import { ConfigurationError, loadRuntimeConfig } from '@llm-crane/core';
+import { TaskRequestSchema, type TaskContext, type TaskRequest } from '@llm-crane/schemas';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
 
+type ContextCaptureMode = 'manual' | 'selection' | 'file' | 'auto';
+
 type TaskPanelInboundMessage = {
   type: 'submitTask';
   value: string;
+  contextMode: ContextCaptureMode;
 };
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
@@ -17,6 +21,7 @@ type TaskPanelStatusMessage = {
   headline: string;
   detail: string;
   submittedTask?: string;
+  requestPreview?: string;
 };
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -25,12 +30,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const disposable = vscode.commands.registerCommand(RUN_TASK_COMMAND, async () => {
     if (taskPanel) {
       taskPanel.reveal(vscode.ViewColumn.Beside, true);
-      postTaskStatus(taskPanel.webview, {
-        status: 'idle',
-        headline: 'Task panel ready',
-        detail:
-          'Describe task, then press Run Task. V0-S05 validates input and runtime config before full orchestrator wiring.',
-      });
       return;
     }
 
@@ -41,7 +40,7 @@ export function activate(context: vscode.ExtensionContext): void {
     postTaskStatus(panel.webview, {
       status: 'idle',
       headline: 'Task panel ready',
-      detail: 'Describe task, then press Run Task. V0-S05 validates input and runtime config before full orchestrator wiring.',
+      detail: 'Choose context mode, then submit task. V0-S06 packages manual input plus selection or file context into TaskRequest payload.',
     });
 
     const panelDisposables: vscode.Disposable[] = [];
@@ -96,21 +95,24 @@ async function handleTaskPanelMessage(webview: vscode.Webview, message: unknown)
   postTaskStatus(webview, {
     status: 'running',
     headline: 'Submitting task',
-    detail: 'Validating runtime config and capturing task metadata for orchestrator handoff.',
+    detail: `Validating runtime config and collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context for orchestrator handoff.`,
     submittedTask: taskText,
   });
 
   try {
     const config = loadRuntimeConfig(process.env);
+    const taskRequest = buildTaskRequest(taskText, message.contextMode);
 
     postTaskStatus(webview, {
       status: 'success',
-      headline: 'Task captured',
-      detail: `Simple model: ${config.defaultSimpleModel}. Complex model: ${config.defaultComplexModel}. Full orchestrator submission lands in V0-S07.`,
+      headline: 'Task payload ready',
+      detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} Simple model: ${config.defaultSimpleModel}. Complex model: ${config.defaultComplexModel}. Full orchestrator submission lands in V0-S07.`,
       submittedTask: taskText,
+      requestPreview: JSON.stringify(taskRequest, null, 2),
     });
   } catch (error) {
-    const detail = error instanceof ConfigurationError ? error.message : 'Unexpected LLM Crane error.';
+    const detail =
+      error instanceof ConfigurationError || error instanceof Error ? error.message : 'Unexpected LLM Crane error.';
 
     postTaskStatus(webview, {
       status: 'error',
@@ -127,7 +129,115 @@ function isTaskPanelInboundMessage(message: unknown): message is TaskPanelInboun
   }
 
   const candidate = message as Partial<TaskPanelInboundMessage>;
-  return candidate.type === 'submitTask' && typeof candidate.value === 'string';
+  return (
+    candidate.type === 'submitTask' &&
+    typeof candidate.value === 'string' &&
+    typeof candidate.contextMode === 'string' &&
+    isContextCaptureMode(candidate.contextMode)
+  );
+}
+
+function isContextCaptureMode(value: string): value is ContextCaptureMode {
+  return value === 'manual' || value === 'selection' || value === 'file' || value === 'auto';
+}
+
+function buildTaskRequest(task: string, contextMode: ContextCaptureMode): TaskRequest {
+  return TaskRequestSchema.parse({
+    task,
+    contexts: collectTaskContexts(contextMode),
+  });
+}
+
+function collectTaskContexts(contextMode: ContextCaptureMode): TaskContext[] {
+  if (contextMode === 'manual') {
+    return [];
+  }
+
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    throw new Error('Open file in editor before sending selection or file context.');
+  }
+
+  const selectionText = editor.document.getText(editor.selection);
+
+  if (contextMode === 'selection') {
+    return [createSelectionContext(editor, selectionText)];
+  }
+
+  if (contextMode === 'file') {
+    return [createFileContext(editor)];
+  }
+
+  if (selectionText.trim().length > 0) {
+    return [createSelectionContext(editor, selectionText)];
+  }
+
+  return [createFileContext(editor)];
+}
+
+function createSelectionContext(editor: vscode.TextEditor, selectionText: string): TaskContext {
+  if (selectionText.trim().length === 0) {
+    throw new Error('Selection mode requires non-empty editor selection.');
+  }
+
+  return {
+    source: 'selection',
+    uri: getContextUri(editor.document),
+    languageId: editor.document.languageId,
+    content: selectionText,
+  };
+}
+
+function createFileContext(editor: vscode.TextEditor): TaskContext {
+  const content = editor.document.getText();
+  if (content.trim().length === 0) {
+    throw new Error('Current file is empty. Use manual mode or add file content first.');
+  }
+
+  return {
+    source: 'file',
+    uri: getContextUri(editor.document),
+    languageId: editor.document.languageId,
+    content,
+  };
+}
+
+function getContextUri(document: vscode.TextDocument): string {
+  return document.uri.scheme === 'file' ? document.uri.fsPath : document.uri.toString();
+}
+
+function getContextModeLabel(contextMode: ContextCaptureMode): string {
+  switch (contextMode) {
+    case 'manual':
+      return 'Manual only';
+    case 'selection':
+      return 'Current selection';
+    case 'file':
+      return 'Current file';
+    case 'auto':
+      return 'Auto selection/file';
+  }
+}
+
+function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: ContextCaptureMode): string {
+  if (taskRequest.contexts.length === 0) {
+    return `${getContextModeLabel(contextMode)} mode. Manual input only. No editor context attached.`;
+  }
+
+  const details = taskRequest.contexts
+    .map((context: TaskContext) => {
+      const parts: string[] = [context.source];
+      if (context.languageId) {
+        parts.push(context.languageId);
+      }
+      if (context.uri) {
+        parts.push(context.uri);
+      }
+      return parts.join(' / ');
+    })
+    .join('; ');
+
+  return `${getContextModeLabel(contextMode)} mode. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
 }
 
 function postTaskStatus(webview: vscode.Webview, message: Omit<TaskPanelStatusMessage, 'type'>): void {
@@ -192,26 +302,45 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         line-height: 1.5;
       }
 
+      .composer {
+        display: grid;
+        gap: 12px;
+      }
+
       label {
         font-weight: 600;
       }
 
+      select,
       textarea {
         width: 100%;
-        min-height: 180px;
-        resize: vertical;
         padding: 12px;
         border: 1px solid var(--vscode-input-border, transparent);
         background: var(--vscode-input-background);
         color: var(--vscode-input-foreground);
         border-radius: 6px;
         font: inherit;
+      }
+
+      select {
+        appearance: none;
+      }
+
+      textarea {
+        min-height: 180px;
+        resize: vertical;
         line-height: 1.5;
       }
 
+      select:focus,
       textarea:focus {
         outline: 1px solid var(--vscode-focusBorder);
         outline-offset: 1px;
+      }
+
+      .field-group {
+        display: grid;
+        gap: 8px;
       }
 
       .actions {
@@ -302,6 +431,27 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         line-height: 1.5;
       }
 
+      .preview-label {
+        display: inline-block;
+        margin-bottom: 4px;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .request-preview {
+        margin: 0;
+        padding: 12px;
+        border-radius: 8px;
+        background: var(--vscode-textCodeBlock-background);
+        color: var(--vscode-textPreformat-foreground);
+        white-space: pre-wrap;
+        line-height: 1.5;
+        max-height: 220px;
+        overflow: auto;
+      }
+
       .usage {
         display: grid;
         gap: 8px;
@@ -320,17 +470,30 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S05</p>
+        <p class="eyebrow">V0-S06</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
-          Use Command Palette entry to open panel, describe task, then submit from inside VS Code. Current step covers command,
-          panel, status transitions, basic runtime validation.
+          Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
+          step covers selection capture, file capture, manual-only mode, payload validation.
         </p>
       </header>
 
       <section class="composer">
-        <label for="task-input">Task description</label>
-        <textarea id="task-input" placeholder="Example: Review current file, explain bug risk, propose small refactor."></textarea>
+        <div class="field-group">
+          <label for="context-mode">Context mode</label>
+          <select id="context-mode">
+            <option value="auto" selected>Auto: use selection, else current file</option>
+            <option value="manual">Manual only</option>
+            <option value="selection">Attach current selection</option>
+            <option value="file">Attach current file</option>
+          </select>
+          <span class="hint">Manual only prevents sending editor content. Auto prefers selection when available.</span>
+        </div>
+
+        <div class="field-group">
+          <label for="task-input">Task description</label>
+          <textarea id="task-input" placeholder="Example: Review current file, explain bug risk, propose small refactor."></textarea>
+        </div>
       </section>
 
       <div class="actions">
@@ -344,14 +507,21 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <strong id="status-headline">Task panel ready</strong>
         </div>
         <p class="status-detail" id="status-detail">Describe task and press Run Task.</p>
-        <pre class="submitted-task" id="submitted-task" hidden></pre>
+        <div id="task-preview-block" hidden>
+          <span class="preview-label">Latest task</span>
+          <pre class="submitted-task" id="submitted-task"></pre>
+        </div>
+        <div id="request-preview-block" hidden>
+          <span class="preview-label">Validated TaskRequest</span>
+          <pre class="request-preview" id="request-preview"></pre>
+        </div>
       </section>
 
       <section class="usage">
         <h2>How to use</h2>
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
-          <li>Describe coding task in text area.</li>
+          <li>Choose manual-only, selection, file, or auto mode.</li>
           <li>Press <strong>Run Task</strong> and inspect running, success, or failure status.</li>
         </ol>
       </section>
@@ -366,33 +536,46 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         error: 'Failed',
       };
 
+      const contextModeInput = document.getElementById('context-mode');
       const taskInput = document.getElementById('task-input');
       const runTaskButton = document.getElementById('run-task');
       const statusPanel = document.getElementById('status-panel');
       const statusBadge = document.getElementById('status-badge');
       const statusHeadline = document.getElementById('status-headline');
       const statusDetail = document.getElementById('status-detail');
+      const taskPreviewBlock = document.getElementById('task-preview-block');
       const submittedTask = document.getElementById('submitted-task');
+      const requestPreviewBlock = document.getElementById('request-preview-block');
+      const requestPreview = document.getElementById('request-preview');
 
-      function setStatus(status, headline, detail, taskText) {
+      function setStatus(status, headline, detail, taskText, payloadPreview) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
         statusHeadline.textContent = headline;
         statusDetail.textContent = detail;
 
         if (taskText && taskText.trim()) {
-          submittedTask.hidden = false;
+          taskPreviewBlock.hidden = false;
           submittedTask.textContent = taskText;
         } else {
-          submittedTask.hidden = true;
+          taskPreviewBlock.hidden = true;
           submittedTask.textContent = '';
+        }
+
+        if (payloadPreview && payloadPreview.trim()) {
+          requestPreviewBlock.hidden = false;
+          requestPreview.textContent = payloadPreview;
+        } else {
+          requestPreviewBlock.hidden = true;
+          requestPreview.textContent = '';
         }
       }
 
       function submitTask() {
         const value = taskInput.value;
-        setStatus('running', 'Submitting task', 'Sending task to extension host.', value);
-        vscode.postMessage({ type: 'submitTask', value });
+        const contextMode = contextModeInput.value;
+        setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', value, '');
+        vscode.postMessage({ type: 'submitTask', value, contextMode });
       }
 
       runTaskButton.addEventListener('click', submitTask);
@@ -408,7 +591,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           return;
         }
 
-        setStatus(message.status, message.headline, message.detail, message.submittedTask);
+        setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview);
       });
     </script>
   </body>

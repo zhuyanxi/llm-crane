@@ -53,6 +53,9 @@ importers:
       '@llm-crane/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@llm-crane/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
     devDependencies:
       '@types/vscode':
         specifier: ^1.100.0
