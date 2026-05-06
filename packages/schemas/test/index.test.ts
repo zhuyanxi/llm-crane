@@ -47,7 +47,13 @@ describe('RuntimeConfigSchema', () => {
           apiFamily: 'openai-compatible',
           baseUrl: 'http://127.0.0.1:1234/v1',
           models: ['local-qwen2.5-coder'],
-          authMode: 'none',
+          authMode: 'header',
+          authToken: 'lmstudio-secret',
+          authHeaderName: 'X-LM-Studio-Key',
+          headers: {
+            'X-Client': 'llm-crane',
+          },
+          timeoutMs: 45000,
         },
         {
           runtimeId: 'ollama-local',
@@ -65,6 +71,9 @@ describe('RuntimeConfigSchema', () => {
     expect(parsed.runtimeProfiles[0]?.runtimeId).toBe('lmstudio-local');
     expect(parsed.runtimeProfiles[0]?.deploymentMode).toBe('local');
     expect(parsed.runtimeProfiles[0]?.apiFamily).toBe('openai-compatible');
+    expect(parsed.runtimeProfiles[0]?.authMode).toBe('header');
+    expect(parsed.runtimeProfiles[0]?.authHeaderName).toBe('X-LM-Studio-Key');
+    expect(parsed.runtimeProfiles[0]?.headers).toEqual({ 'X-Client': 'llm-crane' });
     expect(parsed.runtimeProfiles[1]?.providerId).toBe('ollama');
     expect(parsed.runtimeProfiles[1]?.apiFamily).toBe('ollama');
   });

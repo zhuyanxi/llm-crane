@@ -314,6 +314,186 @@ describe('ProviderRegistry', () => {
     );
   });
 
+  it('passes custom headers and auth for authenticated openai-compatible local runtimes', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(200, {
+        choices: [
+          {
+            message: {
+              content: 'lmstudio result',
+            },
+          },
+        ],
+      }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'lmstudio-local',
+            providerId: 'openai',
+            deploymentMode: 'local',
+            apiFamily: 'openai-compatible',
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            models: ['local-qwen2.5-coder'],
+            authMode: 'header',
+            authToken: 'lmstudio-secret',
+            authHeaderName: 'X-LM-Studio-Key',
+            headers: {
+              'X-Client': 'llm-crane',
+            },
+            timeoutMs: 45000,
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    const result = await registry.invoke({
+      modelId: 'local-qwen2.5-coder',
+      prompt: 'Use authenticated local runtime',
+    });
+
+    expect(result.providerId).toBe('openai');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:1234/v1/chat/completions');
+    expect(fetchMock.mock.calls[0]?.[1].headers?.['X-LM-Studio-Key']).toBe('lmstudio-secret');
+    expect(fetchMock.mock.calls[0]?.[1].headers?.['X-Client']).toBe('llm-crane');
+    expect(fetchMock.mock.calls[0]?.[1].headers?.Authorization).toBeUndefined();
+  });
+
+  it('maps openai-compatible local endpoint mismatch to invalid_request', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(404, {
+        error: {
+          message: 'Not Found',
+        },
+      }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'misconfigured-local',
+            providerId: 'openai',
+            deploymentMode: 'local',
+            apiFamily: 'openai-compatible',
+            baseUrl: 'http://127.0.0.1:1234',
+            models: ['local-qwen2.5-coder'],
+            authMode: 'none',
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'local-qwen2.5-coder',
+        prompt: 'Use misconfigured local runtime',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'openai',
+        code: 'invalid_request',
+        retriable: false,
+        statusCode: 404,
+      }),
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:1234/chat/completions');
+  });
+
+  it('maps openai-compatible local model mismatch to invalid_request', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(400, {
+        error: {
+          message: "Model 'missing-local-model' is not loaded",
+        },
+      }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'lmstudio-local',
+            providerId: 'openai',
+            deploymentMode: 'local',
+            apiFamily: 'openai-compatible',
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            models: ['missing-local-model'],
+            authMode: 'none',
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'missing-local-model',
+        prompt: 'Use wrong local model',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'openai',
+        code: 'invalid_request',
+        retriable: false,
+        statusCode: 400,
+      }),
+    );
+  });
+
+  it('uses runtime profile timeout for openai-compatible local runtimes', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockImplementation(
+      async (_url, init) =>
+        await new Promise((_, reject) => {
+          init.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(createAbortError());
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const registry = createProviderRegistry(
+      {
+        runtimeProfiles: [
+          {
+            runtimeId: 'lmstudio-local',
+            providerId: 'openai',
+            deploymentMode: 'local',
+            apiFamily: 'openai-compatible',
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            models: ['local-qwen2.5-coder'],
+            authMode: 'none',
+            timeoutMs: 5,
+          },
+        ],
+      },
+      { fetch: fetchMock },
+    );
+
+    await expect(
+      registry.invoke({
+        modelId: 'local-qwen2.5-coder',
+        prompt: 'Wait for local timeout',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ProviderInvocationError>>({
+        name: 'ProviderInvocationError',
+        providerId: 'openai',
+        code: 'timeout',
+        retriable: true,
+      }),
+    );
+  });
+
   it('routes ollama runtime profile through ollama adapter', async () => {
     const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
       createJsonResponse(200, {

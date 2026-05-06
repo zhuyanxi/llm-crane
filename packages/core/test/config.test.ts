@@ -42,6 +42,37 @@ describe('loadRuntimeConfig', () => {
     expect(config.runtimeProfiles[0]?.apiFamily).toBe('ollama');
   });
 
+  it('loads config when authenticated openai-compatible runtime profile provides configured models', () => {
+    const config = loadRuntimeConfig({
+      LLM_CRANE_SIMPLE_MODEL: 'local-qwen2.5-coder',
+      LLM_CRANE_COMPLEX_MODEL: 'local-qwen2.5-coder',
+      LLM_CRANE_RUNTIME_PROFILES: JSON.stringify([
+        {
+          runtimeId: 'lmstudio-local',
+          providerId: 'openai',
+          deploymentMode: 'local',
+          apiFamily: 'openai-compatible',
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          models: ['local-qwen2.5-coder'],
+          authMode: 'header',
+          authToken: 'lmstudio-secret',
+          authHeaderName: 'X-LM-Studio-Key',
+          headers: {
+            'X-Client': 'llm-crane',
+          },
+          timeoutMs: 45000,
+        },
+      ]),
+    });
+
+    expect(config.runtimeProfiles[0]?.runtimeId).toBe('lmstudio-local');
+    expect(config.runtimeProfiles[0]?.providerId).toBe('openai');
+    expect(config.runtimeProfiles[0]?.authMode).toBe('header');
+    expect(config.runtimeProfiles[0]?.authHeaderName).toBe('X-LM-Studio-Key');
+    expect(config.runtimeProfiles[0]?.headers).toEqual({ 'X-Client': 'llm-crane' });
+    expect(config.runtimeProfiles[0]?.timeoutMs).toBe(45000);
+  });
+
   it('throws when runtime profile conflicts with hosted model ownership', () => {
     expect(() =>
       loadRuntimeConfig({

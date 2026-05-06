@@ -91,7 +91,7 @@ Minimal manual validation for Ollama:
 3. Set `LLM_CRANE_SIMPLE_MODEL` and `LLM_CRANE_COMPLEX_MODEL` to `qwen2.5-coder:7b`.
 4. Set `LLM_CRANE_RUNTIME_PROFILES` to Ollama profile above, then run `LLM Crane: Run Task` in VS Code.
 
-OpenAI-compatible local runtime example:
+LM Studio / OpenAI-compatible local runtime example:
 
 ```json
 [
@@ -102,10 +102,30 @@ OpenAI-compatible local runtime example:
 		"apiFamily": "openai-compatible",
 		"baseUrl": "http://127.0.0.1:1234/v1",
 		"models": ["local-qwen2.5-coder"],
-		"authMode": "none"
+		"authMode": "header",
+		"authToken": "lmstudio-secret",
+		"authHeaderName": "X-LM-Studio-Key",
+		"headers": {
+			"X-Client": "llm-crane"
+		},
+		"timeoutMs": 45000
 	}
 ]
 ```
+
+Notes for OpenAI-compatible local runtimes:
+
+1. `baseUrl` should include path prefix runtime expects. LM Studio typically uses `http://127.0.0.1:1234/v1`.
+2. Use `authMode: none` when runtime does not require auth.
+3. Use `authMode: header` plus `authToken` and `authHeaderName` when local proxy or gateway expects custom header.
+4. Wrong base URL or wrong local model name surfaces as unified `provider.invalid_request` diagnostic.
+
+Minimal manual validation for LM Studio:
+
+1. Start LM Studio local server with OpenAI-compatible API enabled.
+2. Load target model in LM Studio.
+3. Set `LLM_CRANE_SIMPLE_MODEL` and `LLM_CRANE_COMPLEX_MODEL` to model name exposed by LM Studio.
+4. Set `LLM_CRANE_RUNTIME_PROFILES` to profile above, then run `LLM Crane: Run Task` in VS Code.
 
 Hosted provider keys:
 

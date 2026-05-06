@@ -264,6 +264,83 @@ describe('runTaskPipeline', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:11434/api/generate');
   });
 
+  it('runs simple path end to end through openai-compatible local runtime profile', async () => {
+    const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
+      createJsonResponse(200, {
+        choices: [
+          {
+            message: {
+              content: 'lmstudio pipeline result',
+            },
+          },
+        ],
+        usage: {
+          prompt_tokens: 80,
+          completion_tokens: 20,
+          total_tokens: 100,
+        },
+      }),
+    );
+
+    const localRuntimeConfig: RuntimeConfig = {
+      defaultSimpleModel: 'local-qwen2.5-coder',
+      defaultComplexModel: 'local-qwen2.5-coder',
+      transport: 'stdio',
+      logLevel: 'info',
+      providerKeys: {},
+      runtimeProfiles: [
+        {
+          runtimeId: 'lmstudio-local',
+          providerId: 'openai',
+          deploymentMode: 'local',
+          apiFamily: 'openai-compatible',
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          models: ['local-qwen2.5-coder'],
+          authMode: 'header',
+          authToken: 'lmstudio-secret',
+          authHeaderName: 'X-LM-Studio-Key',
+          headers: {
+            'X-Client': 'llm-crane',
+          },
+          timeoutMs: 45000,
+        },
+      ],
+    };
+
+    const providerRegistry = createProviderRegistry(
+      {
+        runtimeProfiles: localRuntimeConfig.runtimeProfiles,
+      },
+      { fetch: fetchMock },
+    );
+
+    const response = await runTaskPipeline(
+      localRuntimeConfig,
+      providerRegistry,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+      },
+    );
+
+    expect(response.selectedProvider.providerId).toBe('openai');
+    expect(response.selectedProvider.modelId).toBe('local-qwen2.5-coder');
+    expect(response.providerResult.status).toBe('completed');
+    expect(response.output).toBe('lmstudio pipeline result');
+    expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:1234/v1/chat/completions');
+    expect(fetchMock.mock.calls[0]?.[1].headers?.['X-LM-Studio-Key']).toBe('lmstudio-secret');
+  });
+
   it('returns unified provider diagnostic when ollama model is missing', async () => {
     const fetchMock = vi.fn<FetchLike>().mockResolvedValue(
       createJsonResponse(404, {
