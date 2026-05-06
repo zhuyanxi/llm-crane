@@ -60,6 +60,28 @@ describe('diagnostics', () => {
     expect(diagnostic.retriable).toBe(true);
   });
 
+  it('maps local runtime failures to local runtime diagnostics', () => {
+    const diagnostic = createProviderDiagnostic(
+      {
+        providerId: 'ollama',
+        code: 'network',
+        message: 'fetch failed',
+        retriable: true,
+      },
+      'executor.invoke',
+      {
+        runtimeId: 'ollama-local',
+        deploymentMode: 'local',
+        apiFamily: 'ollama',
+      },
+    );
+
+    expect(diagnostic.summary).toBe('Local runtime unavailable');
+    expect(diagnostic.runtimeId).toBe('ollama-local');
+    expect(diagnostic.deploymentMode).toBe('local');
+    expect(diagnostic.apiFamily).toBe('ollama');
+  });
+
   it('wraps fallback diagnostics into diagnostic errors', () => {
     const diagnosticError = createDiagnosticError(new Error('boom'), {
       category: 'internal',

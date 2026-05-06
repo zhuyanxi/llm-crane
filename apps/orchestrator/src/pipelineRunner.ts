@@ -8,6 +8,8 @@ import {
   type PipelineTraceError,
   type PipelineTraceMetadataValue,
   type Diagnostic,
+  type ProviderApiFamily,
+  type ProviderDeploymentMode,
   type ProviderExecutionResult,
   type ProviderId,
   type RouteDecision,
@@ -37,6 +39,14 @@ type PipelineRunnerDependencies = {
 
 type TraceStatus = PipelineTraceEvent['status'];
 type TraceMetadata = Record<string, PipelineTraceMetadataValue>;
+
+type ResolvedProviderTarget = {
+  providerId: ProviderId;
+  modelId: string;
+  runtimeId?: string;
+  deploymentMode?: ProviderDeploymentMode;
+  apiFamily?: ProviderApiFamily;
+};
 
 type TraceAddOptions = {
   metadata?: TraceMetadata;
@@ -93,8 +103,16 @@ function getModelIdForRoute(config: RuntimeConfig, routeDecision: RouteDecision)
   return routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
 }
 
-function resolveProviderIdForModel(providerRegistry: ProviderRegistry, modelId: string): ProviderId | undefined {
-  return providerRegistry.describeModel?.(modelId)?.providerId ?? getProviderIdForModel(modelId);
+function resolveProviderTarget(providerRegistry: ProviderRegistry, modelId: string): ResolvedProviderTarget {
+  const descriptor = providerRegistry.describeModel?.(modelId);
+  if (descriptor) {
+    return descriptor;
+  }
+
+  return {
+    providerId: getProviderIdForModel(modelId) ?? 'openai',
+    modelId,
+  };
 }
 
 function buildTaskOutput(providerResult: ProviderExecutionResult): string {
@@ -237,11 +255,15 @@ export async function runTaskPipeline(
   }
 
   const modelId = getModelIdForRoute(config, routeDecision);
-  const providerId = resolveProviderIdForModel(providerRegistry, modelId) ?? 'openai';
+  const providerTarget = resolveProviderTarget(providerRegistry, modelId);
+  const providerId = providerTarget.providerId;
   trace.add('executor.start', 'running', 'Executor stage started.', {
     metadata: compactMetadata({
       providerId,
       modelId,
+      runtimeId: providerTarget.runtimeId,
+      deploymentMode: providerTarget.deploymentMode,
+      apiFamily: providerTarget.apiFamily,
       route: routeDecision.route,
     }),
   });
@@ -282,6 +304,9 @@ export async function runTaskPipeline(
         metadata: compactMetadata({
           providerId: providerResult.providerId,
           modelId: providerResult.modelId,
+          runtimeId: providerTarget.runtimeId,
+          deploymentMode: providerTarget.deploymentMode,
+          apiFamily: providerTarget.apiFamily,
           latencyMs: providerResult.latencyMs,
           retriable: providerResult.error?.retriable,
         }),
@@ -299,6 +324,9 @@ export async function runTaskPipeline(
         metadata: compactMetadata({
           providerId: providerResult.providerId,
           modelId: providerResult.modelId,
+          runtimeId: providerTarget.runtimeId,
+          deploymentMode: providerTarget.deploymentMode,
+          apiFamily: providerTarget.apiFamily,
           retriable: true,
           retryScheduled: false,
         }),
@@ -328,6 +356,9 @@ export async function runTaskPipeline(
       metadata: compactMetadata({
         providerId,
         modelId,
+        runtimeId: providerTarget.runtimeId,
+        deploymentMode: providerTarget.deploymentMode,
+        apiFamily: providerTarget.apiFamily,
       }),
     });
   }
@@ -340,19 +371,30 @@ export async function runTaskPipeline(
       outputText: providerResult.outputText,
       latencyMs: providerResult.latencyMs,
       executionStatus: providerResult.status,
+      runtimeId: providerTarget.runtimeId,
+      deploymentMode: providerTarget.deploymentMode,
+      apiFamily: providerTarget.apiFamily,
     }),
   );
   diagnostic = diagnostic ?? (providerResult.status === 'failed' && providerResult.error
-    ? createProviderDiagnostic(providerResult.error, 'executor.invoke')
+    ? createProviderDiagnostic(providerResult.error, 'executor.invoke', {
+        runtimeId: providerTarget.runtimeId,
+        deploymentMode: providerTarget.deploymentMode,
+        apiFamily: providerTarget.apiFamily,
+      })
     : undefined);
 
   trace.add('response.cost', 'completed', buildCostDetail(costEstimate), {
     metadata: compactMetadata({
       costStatus: costEstimate.status,
       usageSource: costEstimate.usageSource,
+      pricingSource: costEstimate.pricingSource,
       totalTokens: costEstimate.totalTokens,
       totalCostUsd: costEstimate.totalCostUsd,
       latencyMs: costEstimate.latencyMs,
+      runtimeId: providerTarget.runtimeId,
+      deploymentMode: providerTarget.deploymentMode,
+      apiFamily: providerTarget.apiFamily,
     }),
   });
 
@@ -394,6 +436,9 @@ export async function runTaskPipeline(
     routeDecision,
     selectedProvider: {
       providerId: providerResult.providerId,
+      runtimeId: providerTarget.runtimeId,
+      deploymentMode: providerTarget.deploymentMode,
+      apiFamily: providerTarget.apiFamily,
       modelId,
       reason: routeDecision.reason,
       confidence: routeDecision.confidence,

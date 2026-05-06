@@ -75,6 +75,7 @@ describe('runTaskPipeline', () => {
     expect(response.trace.some((event) => event.stage === 'response.cost' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.output' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'completed')).toBe(true);
+    expect(response.selectedProvider.runtimeId).toBeUndefined();
   });
 
   it('runs complex path end to end with complex model', async () => {
@@ -257,10 +258,14 @@ describe('runTaskPipeline', () => {
     );
 
     expect(response.selectedProvider.providerId).toBe('ollama');
+    expect(response.selectedProvider.runtimeId).toBe('ollama-local');
+    expect(response.selectedProvider.deploymentMode).toBe('local');
+    expect(response.selectedProvider.apiFamily).toBe('ollama');
     expect(response.selectedProvider.modelId).toBe('qwen2.5-coder:7b');
     expect(response.providerResult.status).toBe('completed');
     expect(response.output).toBe('ollama pipeline result');
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'executor.start' && event.metadata.runtimeId === 'ollama-local')).toBe(true);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:11434/api/generate');
   });
 
@@ -283,8 +288,8 @@ describe('runTaskPipeline', () => {
     );
 
     const localRuntimeConfig: RuntimeConfig = {
-      defaultSimpleModel: 'local-qwen2.5-coder',
-      defaultComplexModel: 'local-qwen2.5-coder',
+      defaultSimpleModel: 'gpt-4o-mini',
+      defaultComplexModel: 'gpt-4o-mini',
       transport: 'stdio',
       logLevel: 'info',
       providerKeys: {},
@@ -295,7 +300,7 @@ describe('runTaskPipeline', () => {
           deploymentMode: 'local',
           apiFamily: 'openai-compatible',
           baseUrl: 'http://127.0.0.1:1234/v1',
-          models: ['local-qwen2.5-coder'],
+          models: ['gpt-4o-mini'],
           authMode: 'header',
           authToken: 'lmstudio-secret',
           authHeaderName: 'X-LM-Studio-Key',
@@ -333,10 +338,16 @@ describe('runTaskPipeline', () => {
     );
 
     expect(response.selectedProvider.providerId).toBe('openai');
-    expect(response.selectedProvider.modelId).toBe('local-qwen2.5-coder');
+    expect(response.selectedProvider.runtimeId).toBe('lmstudio-local');
+    expect(response.selectedProvider.deploymentMode).toBe('local');
+    expect(response.selectedProvider.apiFamily).toBe('openai-compatible');
+    expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
     expect(response.providerResult.status).toBe('completed');
     expect(response.output).toBe('lmstudio pipeline result');
+    expect(response.costEstimate.status).toBe('unknown');
+    expect(response.costEstimate.detail).toContain('Local runtime lmstudio-local pricing unavailable');
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'response.cost' && event.metadata.deploymentMode === 'local')).toBe(true);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:1234/v1/chat/completions');
     expect(fetchMock.mock.calls[0]?.[1].headers?.['X-LM-Studio-Key']).toBe('lmstudio-secret');
   });
@@ -395,6 +406,8 @@ describe('runTaskPipeline', () => {
     expect(response.providerResult.status).toBe('failed');
     expect(response.diagnostic?.category).toBe('provider');
     expect(response.diagnostic?.code).toBe('provider.unsupported_model');
+    expect(response.diagnostic?.runtimeId).toBe('ollama-local');
+    expect(response.diagnostic?.deploymentMode).toBe('local');
     expect(response.selectedProvider.providerId).toBe('ollama');
   });
 });

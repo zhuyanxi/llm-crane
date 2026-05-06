@@ -19,6 +19,9 @@ export const TaskContextSchema = z.object({
 
 export const ProviderSelectionSchema = z.object({
   providerId: ProviderIdSchema,
+  runtimeId: z.string().min(1).optional(),
+  deploymentMode: ProviderDeploymentModeSchema.optional(),
+  apiFamily: ProviderApiFamilySchema.optional(),
   modelId: z.string().min(1),
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1).optional(),
@@ -102,6 +105,9 @@ export const DiagnosticSchema = z.object({
   message: z.string().min(1),
   retriable: z.boolean().optional(),
   providerId: ProviderIdSchema.optional(),
+  runtimeId: z.string().min(1).optional(),
+  deploymentMode: ProviderDeploymentModeSchema.optional(),
+  apiFamily: ProviderApiFamilySchema.optional(),
   stage: z.string().min(1).optional(),
 });
 

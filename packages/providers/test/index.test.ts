@@ -103,6 +103,25 @@ describe('pricing', () => {
     expect(failedEstimate.status).toBe('unknown');
     expect(unknownPricing.status).toBe('unknown');
   });
+
+  it('returns unknown cost for local runtimes even when model matches hosted pricing catalog', () => {
+    const estimate = estimateModelCost({
+      modelId: 'gpt-4o-mini',
+      deploymentMode: 'local',
+      runtimeId: 'lmstudio-local',
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+      },
+      executionStatus: 'completed',
+    });
+
+    expect(estimate.status).toBe('unknown');
+    expect(estimate.usageSource).toBe('provider');
+    expect(estimate.pricingSource).toBe('unknown');
+    expect(estimate.totalTokens).toBe(1500);
+    expect(estimate.detail).toContain('lmstudio-local');
+  });
 });
 
 describe('ProviderRegistry', () => {

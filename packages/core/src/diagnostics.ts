@@ -2,9 +2,17 @@ import {
   DiagnosticSchema,
   type Diagnostic,
   type DiagnosticCategory,
+  type ProviderApiFamily,
+  type ProviderDeploymentMode,
   type ProviderError,
 } from '@llm-crane/schemas';
 import { ConfigurationError, SubprocessNotRunningError } from './errors';
+
+type ProviderDiagnosticContext = {
+  runtimeId?: string;
+  deploymentMode?: ProviderDeploymentMode;
+  apiFamily?: ProviderApiFamily;
+};
 
 type DiagnosticFallback = {
   category: DiagnosticCategory;
@@ -60,7 +68,30 @@ function buildSchemaMessage(error: ZodErrorLike): string {
   return `Payload failed schema validation at ${formatIssuePath(issue)}: ${issue.message}`;
 }
 
-function buildProviderSummary(providerError: ProviderError): string {
+function buildProviderSummary(providerError: ProviderError, context?: ProviderDiagnosticContext): string {
+  if (context?.deploymentMode === 'local') {
+    switch (providerError.code) {
+      case 'auth':
+        return 'Local runtime authentication failed';
+      case 'rate_limit':
+        return 'Local runtime rate limit hit';
+      case 'timeout':
+        return 'Local runtime timed out';
+      case 'invalid_request':
+        return 'Local runtime rejected request';
+      case 'network':
+        return 'Local runtime unavailable';
+      case 'unsupported_model':
+        return 'Local model unavailable';
+      case 'provider_not_configured':
+        return 'Local runtime not configured';
+      case 'upstream':
+        return 'Local runtime upstream failure';
+      case 'unknown':
+        return 'Local runtime request failed';
+    }
+  }
+
   switch (providerError.code) {
     case 'auth':
       return 'Provider authentication failed';
@@ -83,14 +114,21 @@ function buildProviderSummary(providerError: ProviderError): string {
   }
 }
 
-export function createProviderDiagnostic(providerError: ProviderError, stage = 'executor.invoke'): Diagnostic {
+export function createProviderDiagnostic(
+  providerError: ProviderError,
+  stage = 'executor.invoke',
+  context: ProviderDiagnosticContext = {},
+): Diagnostic {
   return DiagnosticSchema.parse({
     category: 'provider',
     code: `provider.${providerError.code}`,
-    summary: buildProviderSummary(providerError),
+    summary: buildProviderSummary(providerError, context),
     message: providerError.message,
     retriable: providerError.retriable,
     providerId: providerError.providerId,
+    runtimeId: context.runtimeId,
+    deploymentMode: context.deploymentMode,
+    apiFamily: context.apiFamily,
     stage,
   });
 }
@@ -156,5 +194,8 @@ export function createDiagnosticError(error: unknown, fallback: DiagnosticFallba
 }
 
 export function formatDiagnosticLog(diagnostic: Diagnostic): string {
-  return `category=${diagnostic.category} code=${diagnostic.code} summary=${diagnostic.summary} message=${diagnostic.message}`;
+  const runtimeSuffix = diagnostic.runtimeId ? ` runtime=${diagnostic.runtimeId}` : '';
+  const deploymentSuffix = diagnostic.deploymentMode ? ` deployment=${diagnostic.deploymentMode}` : '';
+  const apiFamilySuffix = diagnostic.apiFamily ? ` apiFamily=${diagnostic.apiFamily}` : '';
+  return `category=${diagnostic.category} code=${diagnostic.code} summary=${diagnostic.summary} message=${diagnostic.message}${runtimeSuffix}${deploymentSuffix}${apiFamilySuffix}`;
 }

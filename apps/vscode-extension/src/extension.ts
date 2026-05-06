@@ -23,6 +23,7 @@ type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 type TaskResultView = {
   output: string;
   selectedModel: string;
+  runtimeSummary: string;
   selectionReason: string;
   executionPathSummary: string;
   diagnosticSummary: string;
@@ -301,8 +302,30 @@ function formatTaskResponseSummary(
   const diagnosticSuffix = taskResponse.diagnostic
     ? ` Diagnostic: ${taskResponse.diagnostic.category}/${taskResponse.diagnostic.code}.`
     : '';
+  const runtimeSuffix = taskResponse.selectedProvider.runtimeId
+    ? ` via ${taskResponse.selectedProvider.runtimeId}/${taskResponse.selectedProvider.deploymentMode ?? 'unknown'}`
+    : '';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId} (${providerStatus}). Cache: ${cacheStatus}.${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${diagnosticSuffix}`;
+}
+
+function formatRuntimeSummary(selectedProvider: TaskResponse['selectedProvider']): string {
+  if (!selectedProvider.runtimeId && !selectedProvider.deploymentMode && !selectedProvider.apiFamily) {
+    return 'Hosted provider profile.';
+  }
+
+  const parts = [
+    selectedProvider.runtimeId ? `runtime=${selectedProvider.runtimeId}` : undefined,
+    selectedProvider.deploymentMode ? `deployment=${selectedProvider.deploymentMode}` : undefined,
+    selectedProvider.apiFamily ? `apiFamily=${selectedProvider.apiFamily}` : undefined,
+  ].filter(Boolean);
+
+  return parts.join(' · ');
+}
+
+function formatSelectedModel(selectedProvider: TaskResponse['selectedProvider']): string {
+  const base = `${selectedProvider.providerId}/${selectedProvider.modelId}`;
+  return selectedProvider.runtimeId ? `${selectedProvider.runtimeId} · ${base}` : base;
 }
 
 function formatDiagnosticDetail(diagnostic: TaskResponse['diagnostic']): string {
@@ -313,6 +336,15 @@ function formatDiagnosticDetail(diagnostic: TaskResponse['diagnostic']): string 
   const parts = [`${diagnostic.category}/${diagnostic.code}`, diagnostic.message];
   if (diagnostic.providerId) {
     parts.push(`provider=${diagnostic.providerId}`);
+  }
+  if (diagnostic.runtimeId) {
+    parts.push(`runtime=${diagnostic.runtimeId}`);
+  }
+  if (diagnostic.deploymentMode) {
+    parts.push(`deployment=${diagnostic.deploymentMode}`);
+  }
+  if (diagnostic.apiFamily) {
+    parts.push(`apiFamily=${diagnostic.apiFamily}`);
   }
   if (diagnostic.retriable !== undefined) {
     parts.push(`retriable=${diagnostic.retriable}`);
@@ -354,7 +386,8 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
 
   return {
     output: taskResponse.output,
-    selectedModel: `${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}`,
+    selectedModel: formatSelectedModel(taskResponse.selectedProvider),
+    runtimeSummary: formatRuntimeSummary(taskResponse.selectedProvider),
     selectionReason: taskResponse.selectedProvider.reason,
     executionPathSummary:
       taskResponse.trace.length > 0
@@ -427,6 +460,13 @@ function formatCacheSummary(taskResponse: TaskResponse): { cacheSummary: string;
 function formatCostSummary(taskResponse: TaskResponse): { costSummary: string; costDetail: string } {
   const estimate = taskResponse.costEstimate;
   if (estimate.status === 'unknown') {
+    if (taskResponse.selectedProvider.deploymentMode === 'local') {
+      return {
+        costSummary: 'Local cost unknown',
+        costDetail: estimate.detail,
+      };
+    }
+
     return {
       costSummary: 'Unknown cost',
       costDetail: estimate.detail,
@@ -826,8 +866,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <pre class="result-output" id="result-output"></pre>
         <div class="result-grid">
           <div class="meta-card">
-            <span class="preview-label">Selected model</span>
+            <span class="preview-label">Selected runtime</span>
             <p class="meta-value" id="result-model"></p>
+            <p class="hint" id="result-runtime"></p>
             <p class="hint" id="result-reason"></p>
           </div>
           <div class="meta-card">
@@ -897,6 +938,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
       const resultModel = document.getElementById('result-model');
+      const resultRuntime = document.getElementById('result-runtime');
       const resultReason = document.getElementById('result-reason');
       const resultPath = document.getElementById('result-path');
       const resultDiagnostic = document.getElementById('result-diagnostic');
@@ -936,6 +978,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModelChip.textContent = resultView.selectedModel;
           resultOutput.textContent = resultView.output;
           resultModel.textContent = resultView.selectedModel;
+          resultRuntime.textContent = resultView.runtimeSummary;
           resultReason.textContent = resultView.selectionReason;
           resultPath.textContent = resultView.executionPathSummary;
           resultDiagnostic.textContent = resultView.diagnosticSummary;
@@ -958,6 +1001,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModelChip.textContent = '';
           resultOutput.textContent = '';
           resultModel.textContent = '';
+          resultRuntime.textContent = '';
           resultReason.textContent = '';
           resultPath.textContent = '';
           resultDiagnostic.textContent = '';

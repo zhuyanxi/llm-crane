@@ -119,6 +119,7 @@ Notes for OpenAI-compatible local runtimes:
 2. Use `authMode: none` when runtime does not require auth.
 3. Use `authMode: header` plus `authToken` and `authHeaderName` when local proxy or gateway expects custom header.
 4. Wrong base URL or wrong local model name surfaces as unified `provider.invalid_request` diagnostic.
+5. Result panel and trace now show runtime identity such as `lmstudio-local` or `ollama-local`, not only provider id.
 
 Minimal manual validation for LM Studio:
 
@@ -126,6 +127,12 @@ Minimal manual validation for LM Studio:
 2. Load target model in LM Studio.
 3. Set `LLM_CRANE_SIMPLE_MODEL` and `LLM_CRANE_COMPLEX_MODEL` to model name exposed by LM Studio.
 4. Set `LLM_CRANE_RUNTIME_PROFILES` to profile above, then run `LLM Crane: Run Task` in VS Code.
+
+Notes for local runtime observability:
+
+1. Set `LLM_CRANE_SIMPLE_MODEL` and `LLM_CRANE_COMPLEX_MODEL` to model names declared in `LLM_CRANE_RUNTIME_PROFILES`.
+2. Result panel shows runtime identity, deployment mode, diagnostic category, and local trace metadata.
+3. Local runtime cost defaults to `unknown` in V0 so cloud catalog pricing is not forced onto local execution.
 
 Hosted provider keys:
 

@@ -37,6 +37,9 @@ type EstimateModelCostInput = {
   outputText?: string;
   latencyMs?: number;
   executionStatus?: 'completed' | 'failed';
+  runtimeId?: string;
+  deploymentMode?: 'hosted' | 'local';
+  apiFamily?: 'openai-compatible' | 'anthropic' | 'gemini' | 'ollama';
 };
 
 const MODEL_PRICING_CATALOG: Record<string, { inputUsdPerMillionTokens: number; outputUsdPerMillionTokens: number }> = {
@@ -141,6 +144,26 @@ function deriveTokenUsage(input: EstimateModelCostInput): {
 }
 
 export function estimateModelCost(input: EstimateModelCostInput): ModelCostEstimate {
+  const tokenUsage = deriveTokenUsage(input);
+
+  if (input.deploymentMode === 'local') {
+    return {
+      status: 'unknown',
+      currency: 'USD',
+      pricingUnit: 'usd-per-1m-tokens',
+      modelId: input.modelId,
+      usageSource: tokenUsage.usageSource,
+      pricingSource: 'unknown',
+      inputTokens: tokenUsage.inputTokens,
+      outputTokens: tokenUsage.outputTokens,
+      totalTokens: tokenUsage.totalTokens,
+      latencyMs: input.latencyMs,
+      detail: input.runtimeId
+        ? `Local runtime ${input.runtimeId} pricing unavailable in V0; token usage shown without cost estimate.`
+        : 'Local runtime pricing unavailable in V0; token usage shown without cost estimate.',
+    };
+  }
+
   const pricing = getModelPricing(input.modelId);
   if (!pricing) {
     return {
@@ -168,7 +191,6 @@ export function estimateModelCost(input: EstimateModelCostInput): ModelCostEstim
     };
   }
 
-  const tokenUsage = deriveTokenUsage(input);
   if (tokenUsage.usageSource === 'unknown' || tokenUsage.inputTokens === undefined || tokenUsage.outputTokens === undefined) {
     return {
       status: 'unknown',

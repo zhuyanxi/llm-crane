@@ -128,6 +128,9 @@ describe('Orchestrator protocol schemas', () => {
         },
         selectedProvider: {
           providerId: 'openai',
+          runtimeId: 'lmstudio-local',
+          deploymentMode: 'local',
+          apiFamily: 'openai-compatible',
           modelId: 'gpt-4o-mini',
           reason: 'Lifecycle probe.',
         },
@@ -139,58 +142,37 @@ describe('Orchestrator protocol schemas', () => {
           latencyMs: 120,
         },
         costEstimate: {
-          status: 'exact',
+          status: 'unknown',
           currency: 'USD',
           pricingUnit: 'usd-per-1m-tokens',
           modelId: 'gpt-4o-mini',
           usageSource: 'provider',
-          pricingSource: 'catalog',
+          pricingSource: 'unknown',
           inputTokens: 100,
           outputTokens: 50,
           totalTokens: 150,
-          inputCostUsd: 0.000015,
-          outputCostUsd: 0.00003,
-          totalCostUsd: 0.000045,
           latencyMs: 120,
-          detail: 'Estimated from provider-reported token usage and local price catalog.',
-        },
-        cacheInfo: {
-          status: 'hit',
-          key: 'cache-key',
-          storage: 'sqlite',
-          createdAt: '2026-05-05T00:00:00.000Z',
-          detail: 'Cache hit; reused prior task response from SQLite store.',
+          detail: 'Local runtime lmstudio-local pricing unavailable in V0; token usage shown without cost estimate.',
         },
         diagnostic: {
           category: 'provider',
-          code: 'provider.rate_limit',
-          summary: 'Provider rate limit hit',
-          message: 'Rate limit exceeded',
-          retriable: true,
+          code: 'provider.network',
+          summary: 'Local runtime unavailable',
+          message: 'fetch failed',
           providerId: 'openai',
-          stage: 'executor.invoke',
+          runtimeId: 'lmstudio-local',
+          deploymentMode: 'local',
+          apiFamily: 'openai-compatible',
         },
         trace: [
           {
-            stage: 'bootstrap',
+            stage: 'executor.start',
             status: 'completed',
             timestamp: '2026-05-05T00:00:00.000Z',
             metadata: {
+              runtimeId: 'lmstudio-local',
+              deploymentMode: 'local',
               requestId: 'req-1',
-              contextCount: 1,
-            },
-          },
-          {
-            stage: 'executor.retry',
-            status: 'retrying',
-            timestamp: '2026-05-05T00:00:01.000Z',
-            detail: 'Provider error marked retriable; automatic retry disabled in V0.',
-            metadata: {
-              retriable: true,
-            },
-            error: {
-              code: 'rate_limit',
-              message: 'Rate limit exceeded',
             },
           },
         ],
@@ -198,22 +180,40 @@ describe('Orchestrator protocol schemas', () => {
     });
 
     expect(parsed.type).toBe('taskResult');
+    if (parsed.type !== 'taskResult') {
+      throw new Error('Expected taskResult envelope');
+    }
+
+    expect(parsed.response.selectedProvider.runtimeId).toBe('lmstudio-local');
+    expect(parsed.response.selectedProvider.deploymentMode).toBe('local');
+    expect(parsed.response.diagnostic?.runtimeId).toBe('lmstudio-local');
+    expect(parsed.response.costEstimate.pricingSource).toBe('unknown');
   });
 
   it('parses error event envelope with diagnostic payload', () => {
     const parsed = OrchestratorEventSchema.parse({
       type: 'error',
       id: 'req-2',
-      message: 'Payload failed schema validation at request.task: Too small: expected string to have >=1 characters',
+      message: 'Provider failed',
       diagnostic: {
-        category: 'schema',
-        code: 'schema.invalid_payload',
-        summary: 'Schema validation failed',
-        message: 'Payload failed schema validation at request.task: Too small: expected string to have >=1 characters',
-        stage: 'orchestrator.protocol',
+        category: 'provider',
+        code: 'provider.network',
+        summary: 'Local runtime unavailable',
+        message: 'fetch failed',
+        providerId: 'openai',
+        runtimeId: 'lmstudio-local',
+        deploymentMode: 'local',
+        apiFamily: 'openai-compatible',
+        stage: 'executor.invoke',
       },
     });
 
     expect(parsed.type).toBe('error');
+    if (parsed.type !== 'error') {
+      throw new Error('Expected error envelope');
+    }
+
+    expect(parsed.diagnostic?.runtimeId).toBe('lmstudio-local');
+    expect(parsed.diagnostic?.deploymentMode).toBe('local');
   });
 });
