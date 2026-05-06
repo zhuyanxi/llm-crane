@@ -1,5 +1,7 @@
 # LLM Crane
 
+[中文 README](README.zh-CN.md)
+
 Local-first, developer-first LLM orchestrator for VS Code.
 
 LLM Crane runs task requests through local orchestration instead of sending everything straight to one large model. Current V0 gives users visible routing, trace, cost estimate, cache status, and failure diagnostics inside VS Code.
