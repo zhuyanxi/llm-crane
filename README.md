@@ -1,6 +1,7 @@
 # LLM Crane
 
 [中文 README](README.zh-CN.md)
+[Chinese release checklist and local smoke guide](README.zh-CN.md#发布与安装)
 
 Local-first, developer-first LLM orchestrator for VS Code.
 

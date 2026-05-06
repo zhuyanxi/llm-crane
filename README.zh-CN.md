@@ -143,6 +143,144 @@ Hosted provider keys：
 - `DEEPSEEK_API_KEY`
 - `GEMINI_API_KEY`
 
+## 发布与安装
+
+### 发布前检查清单
+
+1. 确认环境满足要求：`Node.js >= 22`，`VS Code >= 1.100.0`。
+2. 确认 `apps/vscode-extension/package.json` 中的 `version` 已经设置为本次准备发布的版本。
+3. 在仓库根目录安装依赖：
+
+```bash
+corepack pnpm install
+```
+
+4. 先做全量构建：
+
+```bash
+corepack pnpm build
+```
+
+5. 再做全量类型检查：
+
+```bash
+corepack pnpm typecheck
+```
+
+6. 再做全量测试：
+
+```bash
+corepack pnpm test
+```
+
+7. 打包 VSIX：
+
+```bash
+corepack pnpm --filter @llm-crane/vscode-extension package:vsix
+```
+
+8. 确认产物已经生成在 `apps/vscode-extension/artifacts/llm-crane-<version>.vsix`。
+9. 在干净的 VS Code 环境中安装一次 VSIX，并执行 `Developer: Reload Window`。
+10. 打开真实工作区，在工作区根目录放置 `.env`。不要放到别的目录。
+11. 至少跑一条 `Manual only` 冒烟任务，确认命令 `LLM Crane: Run Task` 能正常返回结果。
+12. 如果本次发布包含本地模型能力，再分别跑一条 Ollama 冒烟和一条 LM Studio 冒烟。
+13. 验收时至少检查这几项：
+	结果面板有输出。
+	runtime identity 正常显示，例如 `ollama-local` 或 `lmstudio-local`。
+	本地 runtime 成本显示为 `unknown`，这是预期行为。
+14. 查看 `Output -> LLM Crane`，确认没有持续性 `Local orchestrator unavailable`、`internal.subprocess_exit` 或 `provider.network`。
+
+### 本地安装后从零到跑通
+
+先做共通步骤，再选择 Ollama 或 LM Studio。
+
+#### 共通步骤
+
+1. 安装插件包：
+
+```bash
+code --install-extension /Users/pingli/Desktop/Github/LLM-Crane/llm-crane/apps/vscode-extension/artifacts/llm-crane-0.1.0.vsix --force
+```
+
+2. 如果没有 `code` CLI，就在 VS Code 中使用 `Extensions -> ... -> Install from VSIX...` 安装。
+3. 安装完成后执行 `Developer: Reload Window`。
+4. 打开一个普通文件夹作为工作区，不要在空窗口中直接使用。
+5. 在工作区根目录创建 `.env`。
+6. 第一次建议选择 `Manual only` 模式，这样不依赖当前编辑器内容。
+
+#### Ollama 极简操作单
+
+1. 启动服务：
+
+```bash
+ollama serve
+```
+
+2. 拉取模型：
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+3. 在工作区根目录写入 `.env`：
+
+```env
+LLM_CRANE_SIMPLE_MODEL=qwen2.5-coder:7b
+LLM_CRANE_COMPLEX_MODEL=qwen2.5-coder:7b
+LLM_CRANE_RUNTIME_PROFILES=[{"runtimeId":"ollama-local","providerId":"ollama","deploymentMode":"local","apiFamily":"ollama","baseUrl":"http://127.0.0.1:11434","models":["qwen2.5-coder:7b"],"authMode":"none","timeoutMs":30000}]
+LLM_CRANE_TRANSPORT=stdio
+LLM_CRANE_LOG_LEVEL=info
+```
+
+4. 回到 VS Code，执行 `Developer: Reload Window`。
+5. 打开 Command Palette，运行 `LLM Crane: Run Task`。
+6. `Context mode` 选择 `Manual only`。
+7. 输入简单任务，例如：`Summarize current file and list 3 refactor ideas.`
+8. 点击 `Run Task`。
+9. 成功信号：
+	面板有输出。
+	runtime 显示 `ollama-local`。
+	cost 显示 `Local cost unknown` 或 `unknown`。
+10. 常见失败：
+	`provider.network`：`ollama serve` 没启动，或端口不对。
+	`provider.unsupported_model`：模型没有 pull，或模型名写错。
+	`configuration.invalid_runtime`：`.env` 里的 JSON 写坏了。
+
+#### LM Studio 极简操作单
+
+1. 启动 LM Studio。
+2. 打开本地服务，并启用 OpenAI-compatible API。
+3. 加载一个模型，并记录 LM Studio 暴露出来的真实模型名。
+4. 在工作区根目录写入 `.env`。下面示例中的 `local-qwen2.5-coder` 需要替换成你的真实模型名。如果 LM Studio 不需要鉴权，也可以把 `authMode` 改成 `none` 并删掉鉴权字段：
+
+```env
+LLM_CRANE_SIMPLE_MODEL=local-qwen2.5-coder
+LLM_CRANE_COMPLEX_MODEL=local-qwen2.5-coder
+LLM_CRANE_RUNTIME_PROFILES=[{"runtimeId":"lmstudio-local","providerId":"openai","deploymentMode":"local","apiFamily":"openai-compatible","baseUrl":"http://127.0.0.1:1234/v1","models":["local-qwen2.5-coder"],"authMode":"header","authToken":"lmstudio-secret","authHeaderName":"X-LM-Studio-Key","headers":{"X-Client":"llm-crane"},"timeoutMs":45000}]
+LLM_CRANE_TRANSPORT=stdio
+LLM_CRANE_LOG_LEVEL=info
+```
+
+5. 回到 VS Code，执行 `Developer: Reload Window`。
+6. 打开 Command Palette，运行 `LLM Crane: Run Task`。
+7. `Context mode` 选择 `Manual only`。
+8. 输入简单任务并点击 `Run Task`。
+9. 成功信号：
+	面板有输出。
+	runtime 显示 `lmstudio-local`。
+	cost 显示 `Local cost unknown` 或 `unknown`。
+10. 常见失败：
+	`provider.invalid_request`：`baseUrl` 错误，最常见是缺少 `/v1`；或模型名错误。
+	`provider.network`：LM Studio 本地服务没有开启。
+	`configuration.invalid_runtime`：`LLM_CRANE_RUNTIME_PROFILES` JSON 非法。
+
+#### 最短排障顺序
+
+1. 先确认 `.env` 放在工作区根目录。
+2. 再确认本地服务已经启动。
+3. 再确认模型名和 `models` 数组里的名字完全一致。
+4. 最后查看 `Output -> LLM Crane` 中的诊断日志。
+
 ## 面向贡献者
 
 ### 工作区结构
