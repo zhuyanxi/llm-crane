@@ -1,9 +1,10 @@
 import { createDiagnosticFromError, createProviderDiagnostic } from '@llm-crane/core';
 import { estimateModelCost, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
-import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
+import { PLANNER_SYSTEM_PROMPT, STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
   CostEstimateSchema,
   TaskResponseSchema,
+  type PlannerResult,
   type PipelineTraceEvent,
   type PipelineTraceError,
   type PipelineTraceMetadataValue,
@@ -43,6 +44,11 @@ import {
   createFailedProviderExecutionResult,
   invokeRoutedProvider,
 } from './providerExecution';
+import {
+  buildPlannerPrompt,
+  createFallbackPlannerResult,
+  planTask,
+} from './planner';
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 
@@ -52,6 +58,8 @@ type PipelineRunnerDependencies = {
   structurizeTaskRequest?: typeof structurizeTaskRequest;
   buildRouterScoreInput?: typeof buildRouterScoreInput;
   routeTask?: typeof routeTask;
+  buildPlannerPrompt?: typeof buildPlannerPrompt;
+  planTask?: typeof planTask;
   buildProviderUserPrompt?: typeof buildProviderUserPrompt;
   invokeRoutedProvider?: typeof invokeRoutedProvider;
 };
@@ -78,6 +86,8 @@ const defaultDependencies: Required<PipelineRunnerDependencies> = {
   structurizeTaskRequest,
   buildRouterScoreInput,
   routeTask,
+  buildPlannerPrompt,
+  planTask,
   buildProviderUserPrompt,
   invokeRoutedProvider,
 };
