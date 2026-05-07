@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ProviderInvocationError } from '@llm-crane/providers';
-import type { PlannerResult, RouteDecision, StructurizerResult, TaskRequest } from '@llm-crane/schemas';
+import type { PlannerResult, ReasonerResult, RouteDecision, StructurizerResult, TaskRequest } from '@llm-crane/schemas';
 import { buildProviderUserPrompt, invokeRoutedProvider } from '../src/providerExecution';
 
 const baseTaskRequest: TaskRequest = {
@@ -92,15 +92,33 @@ const basePlannerResult: PlannerResult = {
   warnings: [],
 };
 
+const baseReasonerResult: ReasonerResult = {
+  status: 'reasoned',
+  needReasoning: true,
+  decisionSource: 'router+planner',
+  escalationReason: 'Workspace-wide scope requires cross-file synthesis before execution.',
+  summary: 'Escalate reasoning for analysis on /workspace/src/app.ts.',
+  keyEvidence: ['Task type: analysis', 'Target: /workspace/src/app.ts'],
+  warnings: [],
+};
+
 describe('buildProviderUserPrompt', () => {
-  it('includes task, structure, route, planner result, and contexts', () => {
-    const prompt = buildProviderUserPrompt(baseTaskRequest, baseStructurizerResult, baseRouteDecision, basePlannerResult);
+  it('includes task, structure, route, planner result, reasoner result, and contexts', () => {
+    const prompt = buildProviderUserPrompt(
+      baseTaskRequest,
+      baseStructurizerResult,
+      baseRouteDecision,
+      basePlannerResult,
+      baseReasonerResult,
+    );
 
     expect(prompt).toContain('Original task:');
     expect(prompt).toContain('Structured task:');
     expect(prompt).toContain('Route decision:');
     expect(prompt).toContain('Planner result:');
+    expect(prompt).toContain('Reasoner result:');
     expect(prompt).toContain('Execution plan for analysis task');
+    expect(prompt).toContain('Escalate reasoning for analysis');
     expect(prompt).toContain('/workspace/src/app.ts');
   });
 });
@@ -126,11 +144,21 @@ describe('invokeRoutedProvider', () => {
       baseStructurizerResult,
       baseRouteDecision,
       basePlannerResult,
+      baseReasonerResult,
     );
 
     expect(result.status).toBe('completed');
     expect(result.outputText).toBe('analysis result');
     expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          plannerStatus: 'planned',
+          reasonerStatus: 'reasoned',
+          needReasoning: 'true',
+        }),
+      }),
+    );
   });
 
   it('maps provider errors into unified failed execution result', async () => {

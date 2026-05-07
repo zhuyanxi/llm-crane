@@ -75,7 +75,10 @@ describe('runTaskPipeline', () => {
     expect(response.pipeline.state).toBe('completed');
     expect(response.pipeline.stages.some((stage) => stage.stageId === 'planner')).toBe(false);
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('completed');
+    expect(response.reasonerResult?.status).toBe('skipped');
+    expect(response.reasonerResult?.earlyExitReason).toContain('simple path');
     expect(response.trace.some((event) => event.stage === 'request.received' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'skipped')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.cost' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.output' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'completed')).toBe(true);
@@ -121,12 +124,16 @@ describe('runTaskPipeline', () => {
     expect(response.costEstimate.totalTokens).toBeGreaterThan(0);
     expect(response.plannerResult?.status).toBe('planned');
     expect(response.plannerResult?.steps.length).toBeGreaterThan(0);
+    expect(response.reasonerResult?.status).toBe('reasoned');
+    expect(response.reasonerResult?.needReasoning).toBe(true);
+    expect(response.reasonerResult?.summary).toContain('Escalate reasoning');
     expect(response.pipeline.graph).toBe('complex-v1');
     expect(response.pipeline.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
-    expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
     expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
   });
 
@@ -167,6 +174,45 @@ describe('runTaskPipeline', () => {
     expect(response.plannerResult?.fallbackReason).toContain('Planner stage crashed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
     expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'failed')).toBe(true);
+  });
+
+  it('falls back to conservative reasoner output when reasoner stage crashes', async () => {
+    const providerRegistry = {
+      invoke: vi.fn().mockResolvedValue({
+        providerId: 'anthropic',
+        modelId: 'claude-3-5-sonnet-latest',
+        outputText: 'complex result with reasoner fallback',
+        latencyMs: 250,
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+      },
+      {
+        reasonTask: () => {
+          throw new Error('reasoner exploded');
+        },
+      },
+    );
+
+    expect(response.providerResult.status).toBe('completed');
+    expect(response.reasonerResult?.status).toBe('fallback');
+    expect(response.reasonerResult?.fallbackReason).toContain('Reasoner stage crashed');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('completed');
+    expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'failed')).toBe(true);
   });
 
   it('returns unified failed task response when executor stage crashes', async () => {

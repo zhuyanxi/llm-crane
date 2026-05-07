@@ -4,6 +4,7 @@ import {
   type PlannerResult,
   type ProviderError,
   type ProviderExecutionResult,
+  type ReasonerResult,
   type RouteDecision,
   type StructurizerResult,
   type TaskContext,
@@ -53,12 +54,14 @@ export function buildProviderUserPrompt(
   structurizerResult: StructurizerResult,
   routeDecision: RouteDecision,
   plannerResult?: PlannerResult,
+  reasonerResult?: ReasonerResult,
 ): string {
   return [
     `Original task:\n${taskRequest.task}`,
     `Structured task:\n${JSON.stringify(structurizerResult.structuredTask, null, 2)}`,
     `Route decision:\n${JSON.stringify(routeDecision, null, 2)}`,
     plannerResult ? `Planner result:\n${JSON.stringify(plannerResult, null, 2)}` : undefined,
+    reasonerResult ? `Reasoner result:\n${JSON.stringify(reasonerResult, null, 2)}` : undefined,
     `Contexts:\n${taskRequest.contexts.length > 0 ? taskRequest.contexts.map(formatContext).join('\n\n---\n\n') : 'No editor context attached.'}`,
   ].filter(Boolean).join('\n\n');
 }
@@ -112,11 +115,12 @@ export async function invokeRoutedProvider(
   structurizerResult: StructurizerResult,
   routeDecision: RouteDecision,
   plannerResult?: PlannerResult,
+  reasonerResult?: ReasonerResult,
 ): Promise<ProviderExecutionResult> {
   try {
     const result = await providerInvoker.invoke({
       modelId,
-      prompt: buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult),
+      prompt: buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult),
       systemPrompt: EXECUTOR_SYSTEM_PROMPT,
       temperature: routeDecision.route === 'simple' ? 0.1 : 0.2,
       maxOutputTokens: getMaxOutputTokens(routeDecision),
@@ -128,6 +132,12 @@ export async function invokeRoutedProvider(
           ? {
               plannerStatus: plannerResult.status,
               planStepCount: String(plannerResult.steps.length),
+            }
+          : {}),
+        ...(reasonerResult
+          ? {
+              reasonerStatus: reasonerResult.status,
+              needReasoning: String(reasonerResult.needReasoning),
             }
           : {}),
       },

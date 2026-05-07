@@ -253,6 +253,37 @@ export const PlannerResultSchema = z.object({
   fallbackReason: z.string().min(1).optional(),
 });
 
+export const ReasonerDecisionSourceSchema = z.enum(['router', 'planner', 'router+planner']);
+
+export const ReasonerInputSchema = z.object({
+  taskType: StructuredTaskTypeSchema,
+  qualityBar: QualityBarSchema,
+  target: z.string().min(1),
+  routeReason: z.string().min(1),
+  needReasoning: z.boolean(),
+  decisionSource: ReasonerDecisionSourceSchema,
+  escalationReason: z.string().min(1).optional(),
+  earlyExitReason: z.string().min(1).optional(),
+  keyContext: z.array(z.string().min(1)).default([]),
+  criticalConstraints: z.array(z.string().min(1)).default([]),
+  decisionPoints: z.array(z.string().min(1)).default([]),
+  plannerFocus: z.array(z.string().min(1)).default([]),
+});
+
+export const ReasonerResultStatusSchema = z.enum(['reasoned', 'skipped', 'fallback']);
+
+export const ReasonerResultSchema = z.object({
+  status: ReasonerResultStatusSchema,
+  needReasoning: z.boolean(),
+  decisionSource: ReasonerDecisionSourceSchema,
+  escalationReason: z.string().min(1).optional(),
+  summary: z.string().min(1),
+  keyEvidence: z.array(z.string().min(1)).default([]),
+  earlyExitReason: z.string().min(1).optional(),
+  warnings: z.array(z.string().min(1)).default([]),
+  fallbackReason: z.string().min(1).optional(),
+});
+
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
@@ -315,6 +346,12 @@ export const PipelineStageInputSchema = z.discriminatedUnion('stageId', [
     plannerAvailable: z.boolean(),
     plannerStatus: z.enum(['planned', 'fallback', 'skipped']).optional(),
     planStepCount: CountSchema,
+    needReasoning: z.boolean(),
+    decisionSource: ReasonerDecisionSourceSchema.optional(),
+    escalationReason: z.string().min(1).optional(),
+    earlyExitReason: z.string().min(1).optional(),
+    keyContextCount: CountSchema,
+    decisionPointCount: CountSchema,
   }),
   z.object({
     stageId: z.literal('verifier'),
@@ -374,9 +411,15 @@ export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
   }),
   z.object({
     stageId: z.literal('reasoner'),
-    status: z.enum(['completed', 'skipped']),
+    status: z.enum(['reasoned', 'skipped', 'fallback']),
     needReasoning: z.boolean(),
+    decisionSource: ReasonerDecisionSourceSchema,
+    summary: z.string().min(1),
+    keyEvidenceCount: CountSchema,
     detail: z.string().min(1),
+    escalationReason: z.string().min(1).optional(),
+    earlyExitReason: z.string().min(1).optional(),
+    fallbackReason: z.string().min(1).optional(),
   }),
   z.object({
     stageId: z.literal('verifier'),
@@ -436,6 +479,7 @@ export const TaskResponseSchema = z.object({
   output: z.string().min(1),
   routeDecision: RouteDecisionSchema,
   plannerResult: PlannerResultSchema.optional(),
+  reasonerResult: ReasonerResultSchema.optional(),
   selectedProvider: ProviderSelectionSchema,
   providerResult: ProviderExecutionResultSchema,
   costEstimate: CostEstimateSchema,
@@ -537,6 +581,10 @@ export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type PlanDecisionPoint = z.infer<typeof PlanDecisionPointSchema>;
 export type PlannerDownstreamHints = z.infer<typeof PlannerDownstreamHintsSchema>;
 export type PlannerResult = z.infer<typeof PlannerResultSchema>;
+export type ReasonerDecisionSource = z.infer<typeof ReasonerDecisionSourceSchema>;
+export type ReasonerInput = z.infer<typeof ReasonerInputSchema>;
+export type ReasonerResultStatus = z.infer<typeof ReasonerResultStatusSchema>;
+export type ReasonerResult = z.infer<typeof ReasonerResultSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type PipelineExecutionState = z.infer<typeof PipelineExecutionStateSchema>;
 export type PipelineGraph = z.infer<typeof PipelineGraphSchema>;

@@ -309,8 +309,11 @@ function formatTaskResponseSummary(
   const plannerSuffix = taskResponse.plannerResult
     ? ` Planner: ${taskResponse.plannerResult.status}/${taskResponse.plannerResult.steps.length} steps.`
     : '';
+  const reasonerSuffix = taskResponse.reasonerResult
+    ? ` Reasoner: ${taskResponse.reasonerResult.status}/${taskResponse.reasonerResult.decisionSource}.`
+    : '';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${diagnosticSuffix}`;
 }
 
 function formatRuntimeSummary(selectedProvider: TaskResponse['selectedProvider']): string {
@@ -402,6 +405,18 @@ function formatPlannerEntries(taskResponse: TaskResponse): string[] {
   ];
 }
 
+function formatReasonerEntries(taskResponse: TaskResponse): string[] {
+  if (!taskResponse.reasonerResult) {
+    return [];
+  }
+
+  return [
+    `reasoner/result · ${taskResponse.reasonerResult.status} · needReasoning=${taskResponse.reasonerResult.needReasoning} · ${taskResponse.reasonerResult.summary}`,
+    ...taskResponse.reasonerResult.keyEvidence.map((evidence, index) => `reasoner/evidence/${index + 1} · ${evidence}`),
+    ...(taskResponse.reasonerResult.earlyExitReason ? [`reasoner/early-exit · ${taskResponse.reasonerResult.earlyExitReason}`] : []),
+  ];
+}
+
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
@@ -436,6 +451,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     costDetail,
     traceEntries: [
       ...formatPlannerEntries(taskResponse),
+      ...formatReasonerEntries(taskResponse),
       ...formatPipelineStageEntries(taskResponse),
       ...formatPipelineTransitionEntries(taskResponse),
       ...traceEntries,

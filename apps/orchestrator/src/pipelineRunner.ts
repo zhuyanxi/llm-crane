@@ -13,6 +13,8 @@ import {
   type ProviderDeploymentMode,
   type ProviderExecutionResult,
   type ProviderId,
+  type ReasonerInput,
+  type ReasonerResult,
   type RouteDecision,
   type RuntimeConfig,
   type StructurizerResult,
@@ -49,6 +51,12 @@ import {
   createFallbackPlannerResult,
   planTask,
 } from './planner';
+import {
+  buildReasonerInput as buildReasonerInputBase,
+  createFallbackReasonerResult as createFallbackReasonerResultBase,
+  createSkippedReasonerResult,
+  reasonTask as reasonTaskBase,
+} from './reasoner';
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 
@@ -60,6 +68,9 @@ type PipelineRunnerDependencies = {
   routeTask?: typeof routeTask;
   buildPlannerPrompt?: typeof buildPlannerPrompt;
   planTask?: typeof planTask;
+  buildReasonerInput?: typeof buildReasonerInputBase;
+  reasonTask?: typeof reasonTaskBase;
+  createFallbackReasonerResult?: typeof createFallbackReasonerResultBase;
   buildProviderUserPrompt?: typeof buildProviderUserPrompt;
   invokeRoutedProvider?: typeof invokeRoutedProvider;
 };
@@ -88,6 +99,9 @@ const defaultDependencies: Required<PipelineRunnerDependencies> = {
   routeTask,
   buildPlannerPrompt,
   planTask,
+  buildReasonerInput: buildReasonerInputBase,
+  reasonTask: reasonTaskBase,
+  createFallbackReasonerResult: createFallbackReasonerResultBase,
   buildProviderUserPrompt,
   invokeRoutedProvider,
 };
@@ -187,31 +201,29 @@ function createPlannerStageError(plannerResult: PlannerResult): PipelineTraceErr
     : undefined;
 }
 
-function annotateComplexFollowUpSkips(
+function createReasonerStageError(reasonerResult: ReasonerResult): PipelineTraceError | undefined {
+  return reasonerResult.fallbackReason
+    ? {
+        code: 'reasoner_fallback',
+        message: reasonerResult.fallbackReason,
+      }
+    : undefined;
+}
+
+function annotateVerifierSkip(
   trace: ReturnType<typeof createTraceCollector>,
   pipelineMachine: ReturnType<typeof createPipelineStateMachine>,
-  taskRequest: TaskRequest,
   routeDecision: RouteDecision,
   plannerResult: PlannerResult,
+  reasonerResult: ReasonerResult,
 ): void {
   if (routeDecision.route !== 'complex') {
     return;
   }
 
-  const reasonerDetail = 'Reasoner stage reserved for V1-S03; planner output captured and stored for downstream reuse.';
-  pipelineMachine.skipStage('reasoner', reasonerDetail, createReasonerStageOutput('skipped', reasonerDetail, false), {
-    input: createReasonerStageInput(taskRequest, routeDecision, true, plannerResult.status, plannerResult.steps.length),
-  });
-  trace.add('reasoner.finish', 'skipped', reasonerDetail, {
-    metadata: compactMetadata({
-      route: routeDecision.route,
-      plannerAvailable: true,
-      plannerStatus: plannerResult.status,
-      planStepCount: plannerResult.steps.length,
-    }),
-  });
-
-  const verifierDetail = 'Verifier stage not enabled in V1-S02; planner output remains available for future verifier checks.';
+  const verifierDetail = reasonerResult.needReasoning
+    ? 'Verifier stage not enabled in V1-S03; reasoner summary remains available for future verifier checks.'
+    : 'Verifier stage not enabled in V1-S03; task exited reasoner early and proceeds directly to execution.';
   pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail), {
     input: createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
   });
@@ -221,6 +233,8 @@ function annotateComplexFollowUpSkips(
       providerReady: true,
       plannerStatus: plannerResult.status,
       planStepCount: plannerResult.steps.length,
+      reasonerStatus: reasonerResult.status,
+      needReasoning: reasonerResult.needReasoning,
     }),
   });
 }
@@ -388,6 +402,7 @@ export async function runTaskPipeline(
   }
 
   let plannerResult: PlannerResult | undefined;
+  let reasonerResult: ReasonerResult | undefined;
 
   if (routeDecision.route === 'complex') {
     trace.add('planner.start', 'running', 'Planner stage started.', {
@@ -461,7 +476,156 @@ export async function runTaskPipeline(
       });
     }
 
-    annotateComplexFollowUpSkips(trace, pipelineMachine, taskRequest, routeDecision, plannerResult);
+  }
+
+  if (routeDecision.route === 'simple') {
+    const reasonerInput = dependencies.buildReasonerInput(taskRequest, structurizerResult, routeDecision, plannerResult);
+    reasonerResult = createSkippedReasonerResult(reasonerInput);
+    pipelineMachine.updateContext({
+      reasonerResult,
+    });
+    trace.add('reasoner.finish', 'skipped', reasonerResult.earlyExitReason ?? reasonerResult.summary, {
+      metadata: compactMetadata({
+        route: routeDecision.route,
+        needReasoning: reasonerResult.needReasoning,
+        decisionSource: reasonerResult.decisionSource,
+        earlyExit: true,
+      }),
+    });
+  } else if (plannerResult) {
+    let reasonerInput: ReasonerInput | undefined;
+
+    try {
+      reasonerInput = dependencies.buildReasonerInput(taskRequest, structurizerResult, routeDecision, plannerResult);
+      trace.add('reasoner.input', 'completed', `keyContext=${reasonerInput.keyContext.length}; focus=${reasonerInput.plannerFocus.length}`, {
+        metadata: compactMetadata({
+          route: routeDecision.route,
+          needReasoning: reasonerInput.needReasoning,
+          decisionSource: reasonerInput.decisionSource,
+          keyContextCount: reasonerInput.keyContext.length,
+          decisionPointCount: reasonerInput.decisionPoints.length,
+          plannerFocusCount: reasonerInput.plannerFocus.length,
+        }),
+      });
+
+      if (!reasonerInput.needReasoning) {
+        reasonerResult = createSkippedReasonerResult(reasonerInput);
+        pipelineMachine.updateContext({
+          reasonerResult,
+        });
+        pipelineMachine.skipStage(
+          'reasoner',
+          reasonerResult.earlyExitReason ?? reasonerResult.summary,
+          createReasonerStageOutput(reasonerResult),
+          {
+            input: createReasonerStageInput(
+              taskRequest,
+              routeDecision,
+              true,
+              plannerResult.status,
+              plannerResult.steps.length,
+              reasonerInput,
+            ),
+          },
+        );
+        trace.add('reasoner.finish', 'skipped', reasonerResult.earlyExitReason ?? reasonerResult.summary, {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            needReasoning: false,
+            decisionSource: reasonerResult.decisionSource,
+            plannerStatus: plannerResult.status,
+            earlyExit: true,
+          }),
+        });
+      } else {
+        trace.add('reasoner.start', 'running', 'Reasoner stage started.', {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            plannerStatus: plannerResult.status,
+            decisionSource: reasonerInput.decisionSource,
+            escalationReason: reasonerInput.escalationReason,
+          }),
+        });
+        pipelineMachine.startStage(
+          'reasoner',
+          createReasonerStageInput(
+            taskRequest,
+            routeDecision,
+            true,
+            plannerResult.status,
+            plannerResult.steps.length,
+            reasonerInput,
+          ),
+        );
+        reasonerResult = dependencies.reasonTask(reasonerInput);
+        pipelineMachine.updateContext({
+          reasonerResult,
+        });
+        pipelineMachine.completeStage('reasoner', createReasonerStageOutput(reasonerResult), {
+          error: createReasonerStageError(reasonerResult),
+        });
+        trace.add(
+          'reasoner.finish',
+          reasonerResult.status === 'reasoned' ? 'completed' : 'failed',
+          reasonerResult.summary,
+          {
+            metadata: compactMetadata({
+              route: routeDecision.route,
+              reasonerStatus: reasonerResult.status,
+              needReasoning: reasonerResult.needReasoning,
+              decisionSource: reasonerResult.decisionSource,
+              evidenceCount: reasonerResult.keyEvidence.length,
+            }),
+            error: createReasonerStageError(reasonerResult),
+          },
+        );
+      }
+    } catch (error) {
+      const fallbackInput = reasonerInput ?? buildReasonerInputBase(taskRequest, structurizerResult, routeDecision, plannerResult);
+      const reason = `Reasoner stage crashed: ${toErrorMessage(error)}`;
+
+      if (pipelineMachine.serialize().stages.some((stage) => stage.stageId === 'reasoner' && stage.state === 'pending')) {
+        pipelineMachine.startStage(
+          'reasoner',
+          createReasonerStageInput(
+            taskRequest,
+            routeDecision,
+            true,
+            plannerResult.status,
+            plannerResult.steps.length,
+            fallbackInput,
+          ),
+        );
+      }
+
+      reasonerResult = dependencies.createFallbackReasonerResult(fallbackInput, reason);
+      pipelineMachine.updateContext({
+        reasonerResult,
+      });
+      pipelineMachine.completeStage('reasoner', createReasonerStageOutput(reasonerResult), {
+        detail: reason,
+        error: createReasonerStageError(reasonerResult) ?? {
+          code: 'reasoner_crash',
+          message: reason,
+        },
+      });
+      trace.add('reasoner.finish', 'failed', reason, {
+        metadata: compactMetadata({
+          route: routeDecision.route,
+          plannerStatus: plannerResult.status,
+          needReasoning: fallbackInput.needReasoning,
+          decisionSource: fallbackInput.decisionSource,
+        }),
+        error: {
+          code: 'reasoner_crash',
+          message: reason,
+        },
+      });
+    }
+
+    if (reasonerResult) {
+      annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
+    }
   }
 
   const modelId = getModelIdForRoute(config, routeDecision);
@@ -487,7 +651,7 @@ export async function runTaskPipeline(
   let diagnostic: Diagnostic | undefined;
 
   try {
-    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult);
+    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult);
     trace.add(
       'executor.prompt',
       'completed',
@@ -507,6 +671,7 @@ export async function runTaskPipeline(
       structurizerResult,
       routeDecision,
       plannerResult,
+      reasonerResult,
     );
     pipelineMachine.updateContext({
       providerResult,
@@ -689,6 +854,7 @@ export async function runTaskPipeline(
     output,
     routeDecision,
     plannerResult,
+    reasonerResult,
     selectedProvider: {
       providerId: providerResult.providerId,
       runtimeId: providerTarget.runtimeId,

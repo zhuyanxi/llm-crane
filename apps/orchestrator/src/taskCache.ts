@@ -10,7 +10,7 @@ const DEFAULT_CACHE_PATH = path.join(DEFAULT_CACHE_DIRECTORY, 'task-cache.sqlite
 
 type PersistedTaskResponse = Pick<
   TaskResponse,
-  'output' | 'routeDecision' | 'plannerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate'
+  'output' | 'routeDecision' | 'plannerResult' | 'reasonerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate'
 >;
 
 export type CachedTaskRecord = {
@@ -73,6 +73,7 @@ export function toPersistedTaskResponse(taskResponse: TaskResponse): PersistedTa
     output: taskResponse.output,
     routeDecision: taskResponse.routeDecision,
     plannerResult: taskResponse.plannerResult,
+    reasonerResult: taskResponse.reasonerResult,
     selectedProvider: taskResponse.selectedProvider,
     providerResult: taskResponse.providerResult,
     costEstimate: taskResponse.costEstimate,

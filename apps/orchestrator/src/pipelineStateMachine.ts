@@ -2,6 +2,9 @@ import type {
   CostEstimate,
   Diagnostic,
   PlannerResult,
+  ReasonerDecisionSource,
+  ReasonerInput,
+  ReasonerResult,
   PipelineExecutionState,
   PipelineGraph,
   PipelineStageId,
@@ -37,6 +40,7 @@ export type PipelineExecutionContext = {
   structurizerResult?: StructurizerResult;
   routeDecision?: RouteDecision;
   plannerResult?: PlannerResult;
+  reasonerResult?: ReasonerResult;
   providerTarget?: ProviderTargetSnapshot;
   providerResult?: ProviderExecutionResult;
   costEstimate?: CostEstimate;
@@ -157,7 +161,7 @@ function assertTransitionAllowed(stage: PipelineStageState, nextState: PipelineE
 
 type CachedPipelineResponse = Pick<
   TaskResponse,
-  'output' | 'routeDecision' | 'plannerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
+  'output' | 'routeDecision' | 'plannerResult' | 'reasonerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
 >;
 
 export class PipelineStateMachine {
@@ -422,6 +426,7 @@ export function createReasonerStageInput(
   plannerAvailable: boolean,
   plannerStatus?: PlannerResult['status'] | 'skipped',
   planStepCount = 0,
+  reasonerInput?: Pick<ReasonerInput, 'needReasoning' | 'decisionSource' | 'escalationReason' | 'earlyExitReason' | 'keyContext' | 'decisionPoints'>,
 ): PipelineStageInput {
   return {
     stageId: 'reasoner',
@@ -430,15 +435,38 @@ export function createReasonerStageInput(
     plannerAvailable,
     plannerStatus,
     planStepCount,
+    needReasoning: reasonerInput?.needReasoning ?? false,
+    decisionSource: reasonerInput?.decisionSource,
+    escalationReason: reasonerInput?.escalationReason,
+    earlyExitReason: reasonerInput?.earlyExitReason,
+    keyContextCount: reasonerInput?.keyContext.length ?? 0,
+    decisionPointCount: reasonerInput?.decisionPoints.length ?? 0,
   };
 }
 
-export function createReasonerStageOutput(status: 'completed' | 'skipped', detail: string, needReasoning: boolean): PipelineStageOutput {
+type ReasonerStageOutputSource = ReasonerResult | {
+  status: ReasonerResult['status'];
+  needReasoning: boolean;
+  decisionSource: ReasonerDecisionSource;
+  summary: string;
+  keyEvidence?: string[];
+  escalationReason?: string;
+  earlyExitReason?: string;
+  fallbackReason?: string;
+};
+
+export function createReasonerStageOutput(source: ReasonerStageOutputSource, detail?: string): PipelineStageOutput {
   return {
     stageId: 'reasoner',
-    status,
-    needReasoning,
-    detail,
+    status: source.status,
+    needReasoning: source.needReasoning,
+    decisionSource: source.decisionSource,
+    summary: source.summary,
+    keyEvidenceCount: source.keyEvidence?.length ?? 0,
+    detail: detail ?? source.summary,
+    escalationReason: source.escalationReason,
+    earlyExitReason: source.earlyExitReason,
+    fallbackReason: source.fallbackReason,
   };
 }
 
@@ -589,6 +617,7 @@ export function buildCachedPipelineState(
   machine.updateContext({
     routeDecision: cachedResponse.routeDecision,
     plannerResult,
+    reasonerResult: cachedResponse.reasonerResult,
     providerTarget: {
       providerId: cachedResponse.selectedProvider.providerId,
       modelId: cachedResponse.selectedProvider.modelId,
@@ -611,8 +640,19 @@ export function buildCachedPipelineState(
   if (cachedResponse.routeDecision.route === 'complex') {
     const cacheStructurizerResult = createCacheFallbackStructurizerResult(taskRequest);
     const complexPlannerResult = plannerResult ?? createCacheFallbackPlannerResult(taskRequest, cachedResponse.routeDecision);
+    const cachedReasonerResult = cachedResponse.reasonerResult ?? {
+      status: 'fallback' as const,
+      needReasoning: false,
+      decisionSource: 'planner' as const,
+      summary: 'Reasoner checkpoint unavailable on cache hit; kept conservative planner-only path.',
+      keyEvidence: ['Cache hit omitted prior reasoner payload.'],
+      earlyExitReason: 'Cache hit omitted prior reasoner payload.',
+      warnings: ['Cache hit rebuilt reasoner state from conservative fallback payload.'],
+      fallbackReason: 'Cache hit omitted prior reasoner payload.',
+    };
     machine.updateContext({
       plannerResult: complexPlannerResult,
+      reasonerResult: cachedReasonerResult,
     });
     machine.skipStage(
       'planner',
@@ -635,7 +675,7 @@ export function buildCachedPipelineState(
     machine.skipStage(
       'reasoner',
       'Cache hit; reused complex graph state without rerunning reasoner.',
-      createReasonerStageOutput('skipped', 'Cache hit reused reasoner checkpoint.', false),
+      createReasonerStageOutput(cachedReasonerResult, 'Cache hit reused reasoner checkpoint.'),
       {
         input: createReasonerStageInput(
           taskRequest,
@@ -643,6 +683,14 @@ export function buildCachedPipelineState(
           true,
           complexPlannerResult.status,
           complexPlannerResult.steps.length,
+          {
+            needReasoning: cachedReasonerResult.needReasoning,
+            decisionSource: cachedReasonerResult.decisionSource,
+            escalationReason: cachedReasonerResult.escalationReason,
+            earlyExitReason: cachedReasonerResult.earlyExitReason,
+            keyContext: [],
+            decisionPoints: [],
+          },
         ),
       },
     );

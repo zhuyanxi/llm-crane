@@ -12,7 +12,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 ### What you get
 
 - Run task from VS Code Command Palette with manual, selection, file, or auto context.
-- Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner before Executor.
+- Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
 - See classified diagnostics for configuration, provider, schema, and internal failures.
@@ -54,6 +54,7 @@ Run inside VS Code:
 - Selected provider/model
 - Pipeline graph, stage states, and execution path summary
 - Planner status, ordered steps, and planner trace entries for complex tasks
+- Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
 - Diagnostic summary when request fails or returns failure state
 - Cache hit, miss, or bypassed state
 - Execution trace summary
@@ -190,10 +191,11 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 ### Current V0 behavior
 
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
-- Complex path runs Planner before Executor and falls back to conservative plan if planner output is invalid
+- Complex path runs Planner before Executor, conditionally enters Reasoner when router or planner signals extra synthesis, and falls back conservatively if planner or reasoner output is invalid
 - Pipeline returns unified `taskResult` payload even when executor stage fails
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks
+- `taskResult.reasonerResult` carries `needReasoning`, decision source, early-exit or escalation summary, and key evidence for downstream executor/UI use
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`
 - Cache uses SQLite-backed local storage with stable task fingerprint and `cache.lookup` / `cache.hit` trace stages
