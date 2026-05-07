@@ -1,6 +1,7 @@
 import { getProviderIdForModel, ProviderInvocationError, type ProviderId, type ProviderInvocationRequest } from '@llm-crane/providers';
 import {
   ProviderExecutionResultSchema,
+  type PlannerResult,
   type ProviderError,
   type ProviderExecutionResult,
   type RouteDecision,
@@ -51,13 +52,15 @@ export function buildProviderUserPrompt(
   taskRequest: TaskRequest,
   structurizerResult: StructurizerResult,
   routeDecision: RouteDecision,
+  plannerResult?: PlannerResult,
 ): string {
   return [
     `Original task:\n${taskRequest.task}`,
     `Structured task:\n${JSON.stringify(structurizerResult.structuredTask, null, 2)}`,
     `Route decision:\n${JSON.stringify(routeDecision, null, 2)}`,
+    plannerResult ? `Planner result:\n${JSON.stringify(plannerResult, null, 2)}` : undefined,
     `Contexts:\n${taskRequest.contexts.length > 0 ? taskRequest.contexts.map(formatContext).join('\n\n---\n\n') : 'No editor context attached.'}`,
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 function toProviderError(modelId: string, error: unknown, providerIdOverride?: ProviderId): ProviderError {
@@ -108,11 +111,12 @@ export async function invokeRoutedProvider(
   taskRequest: TaskRequest,
   structurizerResult: StructurizerResult,
   routeDecision: RouteDecision,
+  plannerResult?: PlannerResult,
 ): Promise<ProviderExecutionResult> {
   try {
     const result = await providerInvoker.invoke({
       modelId,
-      prompt: buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision),
+      prompt: buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult),
       systemPrompt: EXECUTOR_SYSTEM_PROMPT,
       temperature: routeDecision.route === 'simple' ? 0.1 : 0.2,
       maxOutputTokens: getMaxOutputTokens(routeDecision),
@@ -120,6 +124,8 @@ export async function invokeRoutedProvider(
       metadata: {
         route: routeDecision.route,
         taskType: structurizerResult.structuredTask.taskType,
+        plannerStatus: plannerResult?.status,
+        planStepCount: plannerResult?.steps.length,
       },
     });
 

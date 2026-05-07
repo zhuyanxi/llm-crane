@@ -221,6 +221,38 @@ export const RouteDecisionSchema = z.object({
   fallbackReason: z.string().min(1).optional(),
 });
 
+export const PlannerResultStatusSchema = z.enum(['planned', 'fallback']);
+
+export const PlanStepSchema = z.object({
+  stepId: z.string().min(1),
+  title: z.string().min(1),
+  objective: z.string().min(1),
+  acceptance: z.string().min(1),
+});
+
+export const PlanDecisionPointSchema = z.object({
+  question: z.string().min(1),
+  whyItMatters: z.string().min(1),
+  options: z.array(z.string().min(1)).min(1),
+  defaultChoice: z.string().min(1).optional(),
+});
+
+export const PlannerDownstreamHintsSchema = z.object({
+  reasonerFocus: z.array(z.string().min(1)).default([]),
+  verifierChecks: z.array(z.string().min(1)).default([]),
+});
+
+export const PlannerResultSchema = z.object({
+  status: PlannerResultStatusSchema,
+  summary: z.string().min(1),
+  steps: z.array(PlanStepSchema).min(1),
+  decisionPoints: z.array(PlanDecisionPointSchema).default([]),
+  openQuestions: z.array(z.string().min(1)).default([]),
+  downstreamHints: PlannerDownstreamHintsSchema,
+  warnings: z.array(z.string().min(1)).default([]),
+  fallbackReason: z.string().min(1).optional(),
+});
+
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
@@ -273,17 +305,23 @@ export const PipelineStageInputSchema = z.discriminatedUnion('stageId', [
     route: RouteTierSchema,
     taskType: StructuredTaskTypeSchema,
     openQuestions: CountSchema,
+    constraintCount: CountSchema,
+    contextCount: CountSchema,
   }),
   z.object({
     stageId: z.literal('reasoner'),
     route: RouteTierSchema,
     qualityBar: QualityBarSchema,
     plannerAvailable: z.boolean(),
+    plannerStatus: z.enum(['planned', 'fallback', 'skipped']).optional(),
+    planStepCount: CountSchema,
   }),
   z.object({
     stageId: z.literal('verifier'),
     route: RouteTierSchema,
     providerReady: z.boolean(),
+    plannerStatus: z.enum(['planned', 'fallback', 'skipped']).optional(),
+    planStepCount: CountSchema,
   }),
   z.object({
     stageId: z.literal('executor'),
@@ -325,9 +363,14 @@ export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
   }),
   z.object({
     stageId: z.literal('planner'),
-    status: z.enum(['completed', 'skipped']),
+    status: z.enum(['planned', 'fallback', 'skipped']),
+    summary: z.string().min(1),
     planStepCount: CountSchema,
+    decisionPointCount: CountSchema,
+    openQuestionCount: CountSchema,
+    downstreamHintCount: CountSchema,
     detail: z.string().min(1),
+    fallbackReason: z.string().min(1).optional(),
   }),
   z.object({
     stageId: z.literal('reasoner'),
@@ -392,6 +435,7 @@ export const PipelineStateSchema = z.object({
 export const TaskResponseSchema = z.object({
   output: z.string().min(1),
   routeDecision: RouteDecisionSchema,
+  plannerResult: PlannerResultSchema.optional(),
   selectedProvider: ProviderSelectionSchema,
   providerResult: ProviderExecutionResultSchema,
   costEstimate: CostEstimateSchema,
@@ -488,6 +532,11 @@ export type RouteTier = z.infer<typeof RouteTierSchema>;
 export type RouteStrategy = z.infer<typeof RouteStrategySchema>;
 export type RouteScoreFactor = z.infer<typeof RouteScoreFactorSchema>;
 export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
+export type PlannerResultStatus = z.infer<typeof PlannerResultStatusSchema>;
+export type PlanStep = z.infer<typeof PlanStepSchema>;
+export type PlanDecisionPoint = z.infer<typeof PlanDecisionPointSchema>;
+export type PlannerDownstreamHints = z.infer<typeof PlannerDownstreamHintsSchema>;
+export type PlannerResult = z.infer<typeof PlannerResultSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type PipelineExecutionState = z.infer<typeof PipelineExecutionStateSchema>;
 export type PipelineGraph = z.infer<typeof PipelineGraphSchema>;

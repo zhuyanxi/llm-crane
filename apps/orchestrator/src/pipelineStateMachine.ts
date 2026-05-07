@@ -1,6 +1,7 @@
 import type {
   CostEstimate,
   Diagnostic,
+  PlannerResult,
   PipelineExecutionState,
   PipelineGraph,
   PipelineStageId,
@@ -35,6 +36,7 @@ export type PipelineExecutionContext = {
   taskRequest: TaskRequest;
   structurizerResult?: StructurizerResult;
   routeDecision?: RouteDecision;
+  plannerResult?: PlannerResult;
   providerTarget?: ProviderTargetSnapshot;
   providerResult?: ProviderExecutionResult;
   costEstimate?: CostEstimate;
@@ -155,7 +157,7 @@ function assertTransitionAllowed(stage: PipelineStageState, nextState: PipelineE
 
 type CachedPipelineResponse = Pick<
   TaskResponse,
-  'output' | 'routeDecision' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
+  'output' | 'routeDecision' | 'plannerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
 >;
 
 export class PipelineStateMachine {
@@ -368,24 +370,66 @@ export function createPlannerStageInput(routeDecision: RouteDecision, structuriz
     route: routeDecision.route,
     taskType: structurizerResult.structuredTask.taskType,
     openQuestions: structurizerResult.structuredTask.openQuestions.length,
+    constraintCount: structurizerResult.structuredTask.constraints.length,
+    contextCount: structurizerResult.structuredTask.contextSummary.length,
   };
 }
 
-export function createPlannerStageOutput(status: 'completed' | 'skipped', detail: string, planStepCount = 0): PipelineStageOutput {
+export function createPlannerStageOutput(
+  source:
+    | PlannerResult
+    | {
+        status: 'skipped';
+        summary: string;
+        detail: string;
+        planStepCount?: number;
+        decisionPointCount?: number;
+        openQuestionCount?: number;
+        downstreamHintCount?: number;
+        fallbackReason?: string;
+      },
+): PipelineStageOutput {
+  if ('steps' in source) {
+    return {
+      stageId: 'planner',
+      status: source.status,
+      summary: source.summary,
+      planStepCount: source.steps.length,
+      decisionPointCount: source.decisionPoints.length,
+      openQuestionCount: source.openQuestions.length,
+      downstreamHintCount: source.downstreamHints.reasonerFocus.length + source.downstreamHints.verifierChecks.length,
+      detail: source.summary,
+      fallbackReason: source.fallbackReason,
+    };
+  }
+
   return {
     stageId: 'planner',
-    status,
-    planStepCount,
-    detail,
+    status: source.status,
+    summary: source.summary,
+    planStepCount: source.planStepCount ?? 0,
+    decisionPointCount: source.decisionPointCount ?? 0,
+    openQuestionCount: source.openQuestionCount ?? 0,
+    downstreamHintCount: source.downstreamHintCount ?? 0,
+    detail: source.detail,
+    fallbackReason: source.fallbackReason,
   };
 }
 
-export function createReasonerStageInput(taskRequest: TaskRequest, routeDecision: RouteDecision, plannerAvailable: boolean): PipelineStageInput {
+export function createReasonerStageInput(
+  taskRequest: TaskRequest,
+  routeDecision: RouteDecision,
+  plannerAvailable: boolean,
+  plannerStatus?: PlannerResult['status'] | 'skipped',
+  planStepCount = 0,
+): PipelineStageInput {
   return {
     stageId: 'reasoner',
     route: routeDecision.route,
     qualityBar: taskRequest.qualityBar,
     plannerAvailable,
+    plannerStatus,
+    planStepCount,
   };
 }
 
@@ -398,11 +442,18 @@ export function createReasonerStageOutput(status: 'completed' | 'skipped', detai
   };
 }
 
-export function createVerifierStageInput(routeDecision: RouteDecision, providerReady: boolean): PipelineStageInput {
+export function createVerifierStageInput(
+  routeDecision: RouteDecision,
+  providerReady: boolean,
+  plannerStatus?: PlannerResult['status'] | 'skipped',
+  planStepCount = 0,
+): PipelineStageInput {
   return {
     stageId: 'verifier',
     route: routeDecision.route,
     providerReady,
+    plannerStatus,
+    planStepCount,
   };
 }
 
@@ -492,14 +543,52 @@ function createCacheFallbackStructurizerResult(taskRequest: TaskRequest): Struct
   };
 }
 
+function createCacheFallbackPlannerResult(taskRequest: TaskRequest, routeDecision: RouteDecision): PlannerResult {
+  return {
+    status: 'fallback',
+    summary: `Cache hit reused complex route for task "${taskRequest.task}" without persisted planner payload.`,
+    steps: [
+      {
+        stepId: 'inspect-context',
+        title: 'Inspect known context',
+        objective: 'Use cached route and attached request context as conservative planner input.',
+        acceptance: 'Executor keeps scope bounded to known request details.',
+      },
+      {
+        stepId: 'answer-conservatively',
+        title: 'Answer conservatively',
+        objective: 'Produce bounded answer and surface missing details instead of guessing.',
+        acceptance: 'Final answer calls out uncertainty or blockers when confidence is low.',
+      },
+    ],
+    decisionPoints: [
+      {
+        question: 'Should cached complex route stay conservative without original planner payload?',
+        whyItMatters: 'Missing planner payload reduces downstream context fidelity on cache-hit rebuild.',
+        options: ['Yes, keep conservative fallback plan', 'No, reconstruct broad speculative plan'],
+        defaultChoice: 'Yes, keep conservative fallback plan',
+      },
+    ],
+    openQuestions: [],
+    downstreamHints: {
+      reasonerFocus: routeDecision.route === 'complex' ? ['Keep missing planner details explicit.'] : [],
+      verifierChecks: ['Confirm final answer stays within cached request scope.'],
+    },
+    warnings: ['Cache hit rebuilt planner state from conservative fallback payload.'],
+    fallbackReason: 'Cache hit omitted prior planner payload.',
+  };
+}
+
 export function buildCachedPipelineState(
   taskRequest: TaskRequest,
   cachedResponse: CachedPipelineResponse,
   createTimestamp: CreateTimestamp,
 ): PipelineState {
   const machine = createPipelineStateMachine(taskRequest, createTimestamp);
+  const plannerResult = cachedResponse.plannerResult;
   machine.updateContext({
     routeDecision: cachedResponse.routeDecision,
+    plannerResult,
     providerTarget: {
       providerId: cachedResponse.selectedProvider.providerId,
       modelId: cachedResponse.selectedProvider.modelId,
@@ -521,10 +610,24 @@ export function buildCachedPipelineState(
 
   if (cachedResponse.routeDecision.route === 'complex') {
     const cacheStructurizerResult = createCacheFallbackStructurizerResult(taskRequest);
+    const complexPlannerResult = plannerResult ?? createCacheFallbackPlannerResult(taskRequest, cachedResponse.routeDecision);
+    machine.updateContext({
+      plannerResult: complexPlannerResult,
+    });
     machine.skipStage(
       'planner',
       'Cache hit; reused complex graph state without rerunning planner.',
-      createPlannerStageOutput('skipped', 'Cache hit reused planner checkpoint.'),
+      createPlannerStageOutput({
+        status: 'skipped',
+        summary: complexPlannerResult.summary,
+        detail: 'Cache hit reused planner checkpoint.',
+        planStepCount: complexPlannerResult.steps.length,
+        decisionPointCount: complexPlannerResult.decisionPoints.length,
+        openQuestionCount: complexPlannerResult.openQuestions.length,
+        downstreamHintCount:
+          complexPlannerResult.downstreamHints.reasonerFocus.length + complexPlannerResult.downstreamHints.verifierChecks.length,
+        fallbackReason: complexPlannerResult.fallbackReason,
+      }),
       {
         input: createPlannerStageInput(cachedResponse.routeDecision, cacheStructurizerResult),
       },
@@ -534,7 +637,13 @@ export function buildCachedPipelineState(
       'Cache hit; reused complex graph state without rerunning reasoner.',
       createReasonerStageOutput('skipped', 'Cache hit reused reasoner checkpoint.', false),
       {
-        input: createReasonerStageInput(taskRequest, cachedResponse.routeDecision, false),
+        input: createReasonerStageInput(
+          taskRequest,
+          cachedResponse.routeDecision,
+          true,
+          complexPlannerResult.status,
+          complexPlannerResult.steps.length,
+        ),
       },
     );
     machine.skipStage(
@@ -542,7 +651,12 @@ export function buildCachedPipelineState(
       'Cache hit; reused complex graph state without rerunning verifier.',
       createVerifierStageOutput('skipped', 'Cache hit reused verifier checkpoint.'),
       {
-        input: createVerifierStageInput(cachedResponse.routeDecision, true),
+        input: createVerifierStageInput(
+          cachedResponse.routeDecision,
+          true,
+          complexPlannerResult.status,
+          complexPlannerResult.steps.length,
+        ),
       },
     );
   }
