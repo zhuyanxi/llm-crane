@@ -5,6 +5,7 @@ import {
   CostEstimateSchema,
   TaskResponseSchema,
   type PlannerResult,
+  type PipelineCheckpoint,
   type PipelineTraceEvent,
   type PipelineTraceError,
   type PipelineTraceMetadataValue,
@@ -15,6 +16,8 @@ import {
   type ProviderId,
   type ReasonerInput,
   type ReasonerResult,
+  type RerunTaskRequest,
+  type RerunnableStageId,
   type RouteDecision,
   type RuntimeConfig,
   type StructurizerResult,
@@ -59,6 +62,7 @@ import {
 } from './reasoner';
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
+import { createTaskCheckpoint } from './taskCheckpoint';
 
 type PipelineRunnerDependencies = {
   createTimestamp?: () => string;
@@ -91,6 +95,64 @@ type TraceAddOptions = {
   error?: PipelineTraceError;
 };
 
+type PipelineRunMode =
+  | { mode: 'full' }
+  | {
+      mode: 'stage-rerun';
+      rerun: RerunTaskRequest;
+    };
+
+const FULL_RUN_MODE: PipelineRunMode = { mode: 'full' };
+
+const RERUN_STAGE_ORDER: readonly RerunnableStageId[] = ['structurizer', 'router', 'planner', 'reasoner', 'verifier', 'executor'];
+
+const SIMPLE_RERUN_TARGETS = new Set<RerunnableStageId>(['structurizer', 'router', 'executor']);
+
+function getRerunStageIndex(stageId: RerunnableStageId): number {
+  return RERUN_STAGE_ORDER.indexOf(stageId);
+}
+
+function shouldReuseCheckpointStage(runMode: PipelineRunMode, stageId: RerunnableStageId): boolean {
+  if (runMode.mode !== 'stage-rerun') {
+    return false;
+  }
+
+  return getRerunStageIndex(stageId) < getRerunStageIndex(runMode.rerun.targetStageId);
+}
+
+function getCheckpointStage(checkpoint: PipelineCheckpoint, stageId: string) {
+  return checkpoint.pipeline.stages.find((stage) => stage.stageId === stageId);
+}
+
+function assertRerunRequestSupported(rerun: RerunTaskRequest): void {
+  const route = rerun.checkpoint.routeDecision?.route ?? rerun.checkpoint.pipeline.route;
+  const targetStageId = rerun.targetStageId;
+
+  if (route === 'simple' && !SIMPLE_RERUN_TARGETS.has(targetStageId)) {
+    throw new Error(`Stage rerun target ${targetStageId} is unsupported for simple pipeline checkpoint.`);
+  }
+
+  if (shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'structurizer') && !rerun.checkpoint.structurizerResult) {
+    throw new Error('Stage rerun requires structurizer checkpoint before selected target stage.');
+  }
+
+  if (shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'router') && !rerun.checkpoint.routeDecision) {
+    throw new Error('Stage rerun requires route checkpoint before selected target stage.');
+  }
+
+  if (route === 'complex' && shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'planner') && !rerun.checkpoint.plannerResult) {
+    throw new Error('Stage rerun requires planner checkpoint before selected target stage.');
+  }
+
+  if (route === 'complex' && shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'reasoner') && !rerun.checkpoint.reasonerResult) {
+    throw new Error('Stage rerun requires reasoner checkpoint before selected target stage.');
+  }
+}
+
+function createCheckpointReuseDetail(stageId: RerunnableStageId): string {
+  return `Stage rerun reused ${stageId} checkpoint from previous run.`;
+}
+
 const defaultDependencies: Required<PipelineRunnerDependencies> = {
   createTimestamp: () => new Date().toISOString(),
   buildStructurizerPrompt,
@@ -122,8 +184,12 @@ function compactMetadata(metadata: Record<string, PipelineTraceMetadataValue | u
   return compact;
 }
 
-function createTraceCollector(createTimestamp: () => string) {
-  const trace: PipelineTraceEvent[] = [];
+function createTraceCollector(createTimestamp: () => string, initialTrace: PipelineTraceEvent[] = []) {
+  const trace: PipelineTraceEvent[] = initialTrace.map((event) => ({
+    ...event,
+    metadata: { ...event.metadata },
+    error: event.error ? { ...event.error } : undefined,
+  }));
 
   return {
     add(stage: string, status: TraceStatus, detail: string, options: TraceAddOptions = {}): void {
@@ -244,238 +310,315 @@ export async function runTaskPipeline(
   providerRegistry: ProviderRegistry,
   taskRequest: TaskRequest,
   overrides: PipelineRunnerDependencies = {},
+  runMode: PipelineRunMode = FULL_RUN_MODE,
 ): Promise<TaskResponse> {
   const dependencies = {
     ...defaultDependencies,
     ...overrides,
   };
-  const trace = createTraceCollector(dependencies.createTimestamp);
+  if (runMode.mode === 'stage-rerun') {
+    assertRerunRequestSupported(runMode.rerun);
+  }
+
+  const rerunRequest = runMode.mode === 'stage-rerun' ? runMode.rerun : undefined;
+  const historyTrace = rerunRequest?.checkpoint.trace ?? [];
+  const reusedCheckpointStages: RerunnableStageId[] = [];
+  const trace = createTraceCollector(dependencies.createTimestamp, historyTrace);
   const pipelineMachine = createPipelineStateMachine(taskRequest, dependencies.createTimestamp);
 
-  trace.add('pipeline.start', 'running', 'Task pipeline started.', {
+  trace.add('pipeline.start', 'running', runMode.mode === 'stage-rerun' ? `Stage rerun started from ${runMode.rerun.targetStageId}.` : 'Task pipeline started.', {
     metadata: compactMetadata({
       taskChars: taskRequest.task.length,
       contextCount: taskRequest.contexts.length,
       constraintCount: taskRequest.constraints.length,
+      runMode: runMode.mode,
+      targetStageId: runMode.mode === 'stage-rerun' ? runMode.rerun.targetStageId : undefined,
     }),
   });
+  if (rerunRequest) {
+    trace.add('rerun.resume', 'completed', `Retained ${historyTrace.length} trace event(s) and resumed from ${rerunRequest.targetStageId}.`, {
+      metadata: compactMetadata({
+        targetStageId: rerunRequest.targetStageId,
+        historyTraceCount: historyTrace.length,
+        historyTransitionCount: rerunRequest.checkpoint.pipeline.transitions.length,
+      }),
+    });
+  }
   pipelineMachine.startStage('request', createRequestStageInput(taskRequest));
   pipelineMachine.completeStage('request', createRequestStageOutput());
-  trace.add('request.received', 'completed', 'Task request accepted by orchestrator.', {
+  trace.add('request.received', 'completed', runMode.mode === 'stage-rerun' ? 'Stage rerun request accepted by orchestrator.' : 'Task request accepted by orchestrator.', {
     metadata: compactMetadata({
       qualityBar: taskRequest.qualityBar,
       contextCount: taskRequest.contexts.length,
       constraintCount: taskRequest.constraints.length,
     }),
   });
-  trace.add('structurizer.start', 'running', 'Structurizer stage started.', {
-    metadata: compactMetadata({
-      taskChars: taskRequest.task.length,
-      contextCount: taskRequest.contexts.length,
-    }),
-  });
-  pipelineMachine.startStage('structurizer', createStructurizerStageInput(taskRequest));
-
   let structurizerResult: StructurizerResult;
-  try {
-    const structurizerPrompt = dependencies.buildStructurizerPrompt(taskRequest);
-    trace.add(
-      'structurizer.prompt',
-      'completed',
-      `promptChars=${structurizerPrompt.length}; systemPromptChars=${STRUCTURIZER_SYSTEM_PROMPT.length}`,
-      {
-        metadata: compactMetadata({
-          promptChars: structurizerPrompt.length,
-          systemPromptChars: STRUCTURIZER_SYSTEM_PROMPT.length,
-        }),
-      },
-    );
-    structurizerResult = dependencies.structurizeTaskRequest(taskRequest);
+  if (shouldReuseCheckpointStage(runMode, 'structurizer')) {
+    structurizerResult = rerunRequest?.checkpoint.structurizerResult as StructurizerResult;
+    reusedCheckpointStages.push('structurizer');
     pipelineMachine.updateContext({
       structurizerResult,
     });
-    pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
-      error: createStructurizerStageError(structurizerResult),
-    });
-    trace.add(
-      'structurizer.finish',
-      structurizerResult.status === 'structured' ? 'completed' : 'failed',
-      `status=${structurizerResult.status}; taskType=${structurizerResult.structuredTask.taskType}; openQuestions=${structurizerResult.structuredTask.openQuestions.length}`,
+    pipelineMachine.skipStage(
+      'structurizer',
+      createCheckpointReuseDetail('structurizer'),
+      createStructurizerStageOutput(structurizerResult),
       {
-        metadata: compactMetadata({
-          taskType: structurizerResult.structuredTask.taskType,
-          openQuestions: structurizerResult.structuredTask.openQuestions.length,
-          uncertaintyCount: structurizerResult.structuredTask.uncertaintyReasons.length,
-        }),
-        error: structurizerResult.fallbackReason
-          ? {
-              code: 'structurizer_fallback',
-              message: structurizerResult.fallbackReason,
-            }
-          : undefined,
+        input: getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'structurizer')?.input ?? createStructurizerStageInput(taskRequest),
       },
     );
-  } catch (error) {
-    const reason = `Structurizer stage crashed: ${toErrorMessage(error)}`;
-    structurizerResult = createFallbackStructurizerResult(taskRequest, reason);
-    pipelineMachine.updateContext({
-      structurizerResult,
-    });
-    pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
-      detail: reason,
-      error: {
-        code: 'structurizer_crash',
-        message: reason,
-      },
-    });
-    trace.add('structurizer.finish', 'failed', reason, {
-      error: {
-        code: 'structurizer_crash',
-        message: reason,
-      },
-    });
-  }
-
-  trace.add('router.start', 'running', 'Router stage started.', {
-    metadata: compactMetadata({
-      structurizerStatus: structurizerResult.status,
-      warningCount: structurizerResult.warnings.length,
-    }),
-  });
-  pipelineMachine.startStage('router', createRouterStageInput(structurizerResult));
-
-  let routeDecision: RouteDecision;
-  try {
-    const routerScoreInput = dependencies.buildRouterScoreInput(structurizerResult);
-    trace.add('router.score-input', 'completed', `chars=${routerScoreInput.length}`, {
+    trace.add('structurizer.reuse', 'skipped', createCheckpointReuseDetail('structurizer'), {
       metadata: compactMetadata({
-        inputChars: routerScoreInput.length,
+        taskType: structurizerResult.structuredTask.taskType,
+        targetStageId: rerunRequest?.targetStageId,
       }),
     });
-    routeDecision = dependencies.routeTask(structurizerResult);
+  } else {
+    trace.add('structurizer.start', 'running', 'Structurizer stage started.', {
+      metadata: compactMetadata({
+        taskChars: taskRequest.task.length,
+        contextCount: taskRequest.contexts.length,
+      }),
+    });
+    pipelineMachine.startStage('structurizer', createStructurizerStageInput(taskRequest));
+
+    try {
+      const structurizerPrompt = dependencies.buildStructurizerPrompt(taskRequest);
+      trace.add(
+        'structurizer.prompt',
+        'completed',
+        `promptChars=${structurizerPrompt.length}; systemPromptChars=${STRUCTURIZER_SYSTEM_PROMPT.length}`,
+        {
+          metadata: compactMetadata({
+            promptChars: structurizerPrompt.length,
+            systemPromptChars: STRUCTURIZER_SYSTEM_PROMPT.length,
+          }),
+        },
+      );
+      structurizerResult = dependencies.structurizeTaskRequest(taskRequest);
+      pipelineMachine.updateContext({
+        structurizerResult,
+      });
+      pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
+        error: createStructurizerStageError(structurizerResult),
+      });
+      trace.add(
+        'structurizer.finish',
+        structurizerResult.status === 'structured' ? 'completed' : 'failed',
+        `status=${structurizerResult.status}; taskType=${structurizerResult.structuredTask.taskType}; openQuestions=${structurizerResult.structuredTask.openQuestions.length}`,
+        {
+          metadata: compactMetadata({
+            taskType: structurizerResult.structuredTask.taskType,
+            openQuestions: structurizerResult.structuredTask.openQuestions.length,
+            uncertaintyCount: structurizerResult.structuredTask.uncertaintyReasons.length,
+          }),
+          error: structurizerResult.fallbackReason
+            ? {
+                code: 'structurizer_fallback',
+                message: structurizerResult.fallbackReason,
+              }
+            : undefined,
+        },
+      );
+    } catch (error) {
+      const reason = `Structurizer stage crashed: ${toErrorMessage(error)}`;
+      structurizerResult = createFallbackStructurizerResult(taskRequest, reason);
+      pipelineMachine.updateContext({
+        structurizerResult,
+      });
+      pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
+        detail: reason,
+        error: {
+          code: 'structurizer_crash',
+          message: reason,
+        },
+      });
+      trace.add('structurizer.finish', 'failed', reason, {
+        error: {
+          code: 'structurizer_crash',
+          message: reason,
+        },
+      });
+    }
+  }
+
+  let routeDecision: RouteDecision;
+  if (shouldReuseCheckpointStage(runMode, 'router')) {
+    routeDecision = rerunRequest?.checkpoint.routeDecision as RouteDecision;
+    reusedCheckpointStages.push('router');
     pipelineMachine.updateContext({
       routeDecision,
     });
     pipelineMachine.setGraph(routeDecision.route);
-    pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
-      error: createRouterStageError(routeDecision),
+    pipelineMachine.skipStage('router', createCheckpointReuseDetail('router'), createRouterStageOutput(routeDecision), {
+      input: getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'router')?.input ?? createRouterStageInput(structurizerResult),
     });
-    trace.add(
-      'router.finish',
-      routeDecision.status === 'routed' ? 'completed' : 'failed',
-      `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
-      {
+    trace.add('router.reuse', 'skipped', createCheckpointReuseDetail('router'), {
+      metadata: compactMetadata({
+        route: routeDecision.route,
+        complexityScore: routeDecision.complexityScore,
+        targetStageId: rerunRequest?.targetStageId,
+      }),
+    });
+  } else {
+    trace.add('router.start', 'running', 'Router stage started.', {
+      metadata: compactMetadata({
+        structurizerStatus: structurizerResult.status,
+        warningCount: structurizerResult.warnings.length,
+      }),
+    });
+    pipelineMachine.startStage('router', createRouterStageInput(structurizerResult));
+
+    try {
+      const routerScoreInput = dependencies.buildRouterScoreInput(structurizerResult);
+      trace.add('router.score-input', 'completed', `chars=${routerScoreInput.length}`, {
         metadata: compactMetadata({
-          route: routeDecision.route,
-          complexityScore: routeDecision.complexityScore,
-          confidence: routeDecision.confidence,
-          scoreFactors: routeDecision.scoreBreakdown.length,
+          inputChars: routerScoreInput.length,
         }),
-        error: routeDecision.fallbackReason
-          ? {
-              code: 'router_fallback',
-              message: routeDecision.fallbackReason,
-            }
-          : undefined,
-      },
-    );
-  } catch (error) {
-    const reason = `Router stage crashed: ${toErrorMessage(error)}`;
-    routeDecision = createSafeFallbackRouteDecision(reason);
-    pipelineMachine.updateContext({
-      routeDecision,
-    });
-    pipelineMachine.setGraph(routeDecision.route);
-    pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
-      detail: reason,
-      error: {
-        code: 'router_crash',
-        message: reason,
-      },
-    });
-    trace.add('router.finish', 'failed', reason, {
-      error: {
-        code: 'router_crash',
-        message: reason,
-      },
-    });
+      });
+      routeDecision = dependencies.routeTask(structurizerResult);
+      pipelineMachine.updateContext({
+        routeDecision,
+      });
+      pipelineMachine.setGraph(routeDecision.route);
+      pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
+        error: createRouterStageError(routeDecision),
+      });
+      trace.add(
+        'router.finish',
+        routeDecision.status === 'routed' ? 'completed' : 'failed',
+        `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
+        {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            complexityScore: routeDecision.complexityScore,
+            confidence: routeDecision.confidence,
+            scoreFactors: routeDecision.scoreBreakdown.length,
+          }),
+          error: routeDecision.fallbackReason
+            ? {
+                code: 'router_fallback',
+                message: routeDecision.fallbackReason,
+              }
+            : undefined,
+        },
+      );
+    } catch (error) {
+      const reason = `Router stage crashed: ${toErrorMessage(error)}`;
+      routeDecision = createSafeFallbackRouteDecision(reason);
+      pipelineMachine.updateContext({
+        routeDecision,
+      });
+      pipelineMachine.setGraph(routeDecision.route);
+      pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
+        detail: reason,
+        error: {
+          code: 'router_crash',
+          message: reason,
+        },
+      });
+      trace.add('router.finish', 'failed', reason, {
+        error: {
+          code: 'router_crash',
+          message: reason,
+        },
+      });
+    }
   }
 
   let plannerResult: PlannerResult | undefined;
   let reasonerResult: ReasonerResult | undefined;
 
   if (routeDecision.route === 'complex') {
-    trace.add('planner.start', 'running', 'Planner stage started.', {
-      metadata: compactMetadata({
-        route: routeDecision.route,
-        taskType: structurizerResult.structuredTask.taskType,
-        openQuestions: structurizerResult.structuredTask.openQuestions.length,
-      }),
-    });
-    pipelineMachine.startStage('planner', createPlannerStageInput(routeDecision, structurizerResult));
-
-    try {
-      const plannerPrompt = dependencies.buildPlannerPrompt(taskRequest, structurizerResult, routeDecision);
-      trace.add(
-        'planner.prompt',
-        'completed',
-        `promptChars=${plannerPrompt.length}; systemPromptChars=${PLANNER_SYSTEM_PROMPT.length}`,
-        {
-          metadata: compactMetadata({
-            promptChars: plannerPrompt.length,
-            systemPromptChars: PLANNER_SYSTEM_PROMPT.length,
-          }),
-        },
-      );
-
-      plannerResult = dependencies.planTask(taskRequest, structurizerResult, routeDecision);
+    if (shouldReuseCheckpointStage(runMode, 'planner')) {
+      plannerResult = rerunRequest?.checkpoint.plannerResult as PlannerResult;
+      reusedCheckpointStages.push('planner');
       pipelineMachine.updateContext({
         plannerResult,
       });
-      pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
-        error: createPlannerStageError(plannerResult),
+      pipelineMachine.skipStage('planner', createCheckpointReuseDetail('planner'), createPlannerStageOutput(plannerResult), {
+        input: getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'planner')?.input ?? createPlannerStageInput(routeDecision, structurizerResult),
       });
-      trace.add(
-        'planner.finish',
-        plannerResult.status === 'planned' ? 'completed' : 'failed',
-        `status=${plannerResult.status}; steps=${plannerResult.steps.length}; decisionPoints=${plannerResult.decisionPoints.length}`,
-        {
+      trace.add('planner.reuse', 'skipped', createCheckpointReuseDetail('planner'), {
+        metadata: compactMetadata({
+          plannerStatus: plannerResult.status,
+          planStepCount: plannerResult.steps.length,
+          targetStageId: rerunRequest?.targetStageId,
+        }),
+      });
+    } else {
+      trace.add('planner.start', 'running', 'Planner stage started.', {
+        metadata: compactMetadata({
+          route: routeDecision.route,
+          taskType: structurizerResult.structuredTask.taskType,
+          openQuestions: structurizerResult.structuredTask.openQuestions.length,
+        }),
+      });
+      pipelineMachine.startStage('planner', createPlannerStageInput(routeDecision, structurizerResult));
+
+      try {
+        const plannerPrompt = dependencies.buildPlannerPrompt(taskRequest, structurizerResult, routeDecision);
+        trace.add(
+          'planner.prompt',
+          'completed',
+          `promptChars=${plannerPrompt.length}; systemPromptChars=${PLANNER_SYSTEM_PROMPT.length}`,
+          {
+            metadata: compactMetadata({
+              promptChars: plannerPrompt.length,
+              systemPromptChars: PLANNER_SYSTEM_PROMPT.length,
+            }),
+          },
+        );
+
+        plannerResult = dependencies.planTask(taskRequest, structurizerResult, routeDecision);
+        pipelineMachine.updateContext({
+          plannerResult,
+        });
+        pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
+          error: createPlannerStageError(plannerResult),
+        });
+        trace.add(
+          'planner.finish',
+          plannerResult.status === 'planned' ? 'completed' : 'failed',
+          `status=${plannerResult.status}; steps=${plannerResult.steps.length}; decisionPoints=${plannerResult.decisionPoints.length}`,
+          {
+            metadata: compactMetadata({
+              plannerStatus: plannerResult.status,
+              planStepCount: plannerResult.steps.length,
+              decisionPointCount: plannerResult.decisionPoints.length,
+              openQuestionCount: plannerResult.openQuestions.length,
+            }),
+            error: createPlannerStageError(plannerResult),
+          },
+        );
+      } catch (error) {
+        const reason = `Planner stage crashed: ${toErrorMessage(error)}`;
+        plannerResult = createFallbackPlannerResult(taskRequest, structurizerResult, routeDecision, reason);
+        pipelineMachine.updateContext({
+          plannerResult,
+        });
+        pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
+          detail: reason,
+          error: {
+            code: 'planner_crash',
+            message: reason,
+          },
+        });
+        trace.add('planner.finish', 'failed', reason, {
           metadata: compactMetadata({
             plannerStatus: plannerResult.status,
             planStepCount: plannerResult.steps.length,
             decisionPointCount: plannerResult.decisionPoints.length,
             openQuestionCount: plannerResult.openQuestions.length,
           }),
-          error: createPlannerStageError(plannerResult),
-        },
-      );
-    } catch (error) {
-      const reason = `Planner stage crashed: ${toErrorMessage(error)}`;
-      plannerResult = createFallbackPlannerResult(taskRequest, structurizerResult, routeDecision, reason);
-      pipelineMachine.updateContext({
-        plannerResult,
-      });
-      pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
-        detail: reason,
-        error: {
-          code: 'planner_crash',
-          message: reason,
-        },
-      });
-      trace.add('planner.finish', 'failed', reason, {
-        metadata: compactMetadata({
-          plannerStatus: plannerResult.status,
-          planStepCount: plannerResult.steps.length,
-          decisionPointCount: plannerResult.decisionPoints.length,
-          openQuestionCount: plannerResult.openQuestions.length,
-        }),
-        error: {
-          code: 'planner_crash',
-          message: reason,
-        },
-      });
+          error: {
+            code: 'planner_crash',
+            message: reason,
+          },
+        });
+      }
     }
-
   }
 
   if (routeDecision.route === 'simple') {
@@ -493,32 +636,88 @@ export async function runTaskPipeline(
       }),
     });
   } else if (plannerResult) {
-    let reasonerInput: ReasonerInput | undefined;
-
-    try {
-      reasonerInput = dependencies.buildReasonerInput(taskRequest, structurizerResult, routeDecision, plannerResult);
-      trace.add('reasoner.input', 'completed', `keyContext=${reasonerInput.keyContext.length}; focus=${reasonerInput.plannerFocus.length}`, {
+    if (shouldReuseCheckpointStage(runMode, 'reasoner')) {
+      reasonerResult = rerunRequest?.checkpoint.reasonerResult as ReasonerResult;
+      reusedCheckpointStages.push('reasoner');
+      pipelineMachine.updateContext({
+        reasonerResult,
+      });
+      pipelineMachine.skipStage('reasoner', createCheckpointReuseDetail('reasoner'), createReasonerStageOutput(reasonerResult, createCheckpointReuseDetail('reasoner')), {
+        input:
+          getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'reasoner')?.input ??
+          createReasonerStageInput(
+            taskRequest,
+            routeDecision,
+            true,
+            plannerResult.status,
+            plannerResult.steps.length,
+            dependencies.buildReasonerInput(taskRequest, structurizerResult, routeDecision, plannerResult),
+          ),
+      });
+      trace.add('reasoner.reuse', 'skipped', createCheckpointReuseDetail('reasoner'), {
         metadata: compactMetadata({
           route: routeDecision.route,
-          needReasoning: reasonerInput.needReasoning,
-          decisionSource: reasonerInput.decisionSource,
-          keyContextCount: reasonerInput.keyContext.length,
-          decisionPointCount: reasonerInput.decisionPoints.length,
-          plannerFocusCount: reasonerInput.plannerFocus.length,
+          reasonerStatus: reasonerResult.status,
+          targetStageId: rerunRequest?.targetStageId,
         }),
       });
+    } else {
+      let reasonerInput: ReasonerInput | undefined;
 
-      if (!reasonerInput.needReasoning) {
-        reasonerResult = createSkippedReasonerResult(reasonerInput);
-        pipelineMachine.updateContext({
-          reasonerResult,
+      try {
+        reasonerInput = dependencies.buildReasonerInput(taskRequest, structurizerResult, routeDecision, plannerResult);
+        trace.add('reasoner.input', 'completed', `keyContext=${reasonerInput.keyContext.length}; focus=${reasonerInput.plannerFocus.length}`, {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            needReasoning: reasonerInput.needReasoning,
+            decisionSource: reasonerInput.decisionSource,
+            keyContextCount: reasonerInput.keyContext.length,
+            decisionPointCount: reasonerInput.decisionPoints.length,
+            plannerFocusCount: reasonerInput.plannerFocus.length,
+          }),
         });
-        pipelineMachine.skipStage(
-          'reasoner',
-          reasonerResult.earlyExitReason ?? reasonerResult.summary,
-          createReasonerStageOutput(reasonerResult),
-          {
-            input: createReasonerStageInput(
+
+        if (!reasonerInput.needReasoning) {
+          reasonerResult = createSkippedReasonerResult(reasonerInput);
+          pipelineMachine.updateContext({
+            reasonerResult,
+          });
+          pipelineMachine.skipStage(
+            'reasoner',
+            reasonerResult.earlyExitReason ?? reasonerResult.summary,
+            createReasonerStageOutput(reasonerResult),
+            {
+              input: createReasonerStageInput(
+                taskRequest,
+                routeDecision,
+                true,
+                plannerResult.status,
+                plannerResult.steps.length,
+                reasonerInput,
+              ),
+            },
+          );
+          trace.add('reasoner.finish', 'skipped', reasonerResult.earlyExitReason ?? reasonerResult.summary, {
+            metadata: compactMetadata({
+              route: routeDecision.route,
+              needReasoning: false,
+              decisionSource: reasonerResult.decisionSource,
+              plannerStatus: plannerResult.status,
+              earlyExit: true,
+            }),
+          });
+        } else {
+          trace.add('reasoner.start', 'running', 'Reasoner stage started.', {
+            metadata: compactMetadata({
+              route: routeDecision.route,
+              plannerStatus: plannerResult.status,
+              decisionSource: reasonerInput.decisionSource,
+              escalationReason: reasonerInput.escalationReason,
+            }),
+          });
+          pipelineMachine.startStage(
+            'reasoner',
+            createReasonerStageInput(
               taskRequest,
               routeDecision,
               true,
@@ -526,105 +725,98 @@ export async function runTaskPipeline(
               plannerResult.steps.length,
               reasonerInput,
             ),
-          },
-        );
-        trace.add('reasoner.finish', 'skipped', reasonerResult.earlyExitReason ?? reasonerResult.summary, {
-          metadata: compactMetadata({
-            route: routeDecision.route,
-            needReasoning: false,
-            decisionSource: reasonerResult.decisionSource,
-            plannerStatus: plannerResult.status,
-            earlyExit: true,
-          }),
-        });
-      } else {
-        trace.add('reasoner.start', 'running', 'Reasoner stage started.', {
-          metadata: compactMetadata({
-            route: routeDecision.route,
-            plannerStatus: plannerResult.status,
-            decisionSource: reasonerInput.decisionSource,
-            escalationReason: reasonerInput.escalationReason,
-          }),
-        });
-        pipelineMachine.startStage(
-          'reasoner',
-          createReasonerStageInput(
-            taskRequest,
-            routeDecision,
-            true,
-            plannerResult.status,
-            plannerResult.steps.length,
-            reasonerInput,
-          ),
-        );
-        reasonerResult = dependencies.reasonTask(reasonerInput);
+          );
+          reasonerResult = dependencies.reasonTask(reasonerInput);
+          pipelineMachine.updateContext({
+            reasonerResult,
+          });
+          pipelineMachine.completeStage('reasoner', createReasonerStageOutput(reasonerResult), {
+            error: createReasonerStageError(reasonerResult),
+          });
+          trace.add(
+            'reasoner.finish',
+            reasonerResult.status === 'reasoned' ? 'completed' : 'failed',
+            reasonerResult.summary,
+            {
+              metadata: compactMetadata({
+                route: routeDecision.route,
+                reasonerStatus: reasonerResult.status,
+                needReasoning: reasonerResult.needReasoning,
+                decisionSource: reasonerResult.decisionSource,
+                evidenceCount: reasonerResult.keyEvidence.length,
+              }),
+              error: createReasonerStageError(reasonerResult),
+            },
+          );
+        }
+      } catch (error) {
+        const fallbackInput = reasonerInput ?? buildReasonerInputBase(taskRequest, structurizerResult, routeDecision, plannerResult);
+        const reason = `Reasoner stage crashed: ${toErrorMessage(error)}`;
+
+        if (pipelineMachine.serialize().stages.some((stage) => stage.stageId === 'reasoner' && stage.state === 'pending')) {
+          pipelineMachine.startStage(
+            'reasoner',
+            createReasonerStageInput(
+              taskRequest,
+              routeDecision,
+              true,
+              plannerResult.status,
+              plannerResult.steps.length,
+              fallbackInput,
+            ),
+          );
+        }
+
+        reasonerResult = dependencies.createFallbackReasonerResult(fallbackInput, reason);
         pipelineMachine.updateContext({
           reasonerResult,
         });
         pipelineMachine.completeStage('reasoner', createReasonerStageOutput(reasonerResult), {
-          error: createReasonerStageError(reasonerResult),
-        });
-        trace.add(
-          'reasoner.finish',
-          reasonerResult.status === 'reasoned' ? 'completed' : 'failed',
-          reasonerResult.summary,
-          {
-            metadata: compactMetadata({
-              route: routeDecision.route,
-              reasonerStatus: reasonerResult.status,
-              needReasoning: reasonerResult.needReasoning,
-              decisionSource: reasonerResult.decisionSource,
-              evidenceCount: reasonerResult.keyEvidence.length,
-            }),
-            error: createReasonerStageError(reasonerResult),
+          detail: reason,
+          error: createReasonerStageError(reasonerResult) ?? {
+            code: 'reasoner_crash',
+            message: reason,
           },
-        );
+        });
+        trace.add('reasoner.finish', 'failed', reason, {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            plannerStatus: plannerResult.status,
+            needReasoning: fallbackInput.needReasoning,
+            decisionSource: fallbackInput.decisionSource,
+          }),
+          error: {
+            code: 'reasoner_crash',
+            message: reason,
+          },
+        });
       }
-    } catch (error) {
-      const fallbackInput = reasonerInput ?? buildReasonerInputBase(taskRequest, structurizerResult, routeDecision, plannerResult);
-      const reason = `Reasoner stage crashed: ${toErrorMessage(error)}`;
-
-      if (pipelineMachine.serialize().stages.some((stage) => stage.stageId === 'reasoner' && stage.state === 'pending')) {
-        pipelineMachine.startStage(
-          'reasoner',
-          createReasonerStageInput(
-            taskRequest,
-            routeDecision,
-            true,
-            plannerResult.status,
-            plannerResult.steps.length,
-            fallbackInput,
-          ),
-        );
-      }
-
-      reasonerResult = dependencies.createFallbackReasonerResult(fallbackInput, reason);
-      pipelineMachine.updateContext({
-        reasonerResult,
-      });
-      pipelineMachine.completeStage('reasoner', createReasonerStageOutput(reasonerResult), {
-        detail: reason,
-        error: createReasonerStageError(reasonerResult) ?? {
-          code: 'reasoner_crash',
-          message: reason,
-        },
-      });
-      trace.add('reasoner.finish', 'failed', reason, {
-        metadata: compactMetadata({
-          route: routeDecision.route,
-          plannerStatus: plannerResult.status,
-          needReasoning: fallbackInput.needReasoning,
-          decisionSource: fallbackInput.decisionSource,
-        }),
-        error: {
-          code: 'reasoner_crash',
-          message: reason,
-        },
-      });
     }
 
     if (reasonerResult) {
-      annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
+      if (shouldReuseCheckpointStage(runMode, 'verifier')) {
+        reusedCheckpointStages.push('verifier');
+        const verifierDetail = createCheckpointReuseDetail('verifier');
+        const verifierCheckpointStage = getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'verifier');
+        pipelineMachine.skipStage(
+          'verifier',
+          verifierDetail,
+          verifierCheckpointStage?.output ?? createVerifierStageOutput('skipped', verifierDetail),
+          {
+            input:
+              verifierCheckpointStage?.input ??
+              createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
+          },
+        );
+        trace.add('verifier.reuse', 'skipped', verifierDetail, {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            targetStageId: rerunRequest?.targetStageId,
+          }),
+        });
+      } else {
+        annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
+      }
     }
   }
 
@@ -850,8 +1042,32 @@ export async function runTaskPipeline(
     },
   );
 
+  const pipeline = pipelineMachine.serialize();
+  const traceEntries = trace.list();
+  const checkpoint = createTaskCheckpoint({
+    taskRequest,
+    structurizerResult,
+    routeDecision,
+    plannerResult,
+    reasonerResult,
+    pipeline,
+    trace: traceEntries,
+    capturedAt: dependencies.createTimestamp(),
+  });
+
   return TaskResponseSchema.parse({
     output,
+    runInfo: {
+      mode: runMode.mode,
+      targetStageId: runMode.mode === 'stage-rerun' ? runMode.rerun.targetStageId : undefined,
+      reusedCheckpointStages,
+      historyTraceCount: historyTrace.length,
+      historyTransitionCount: runMode.mode === 'stage-rerun' ? runMode.rerun.checkpoint.pipeline.transitions.length : 0,
+      detail:
+        rerunRequest
+          ? `Stage rerun resumed from ${rerunRequest.targetStageId}.`
+          : 'Full pipeline run.',
+    },
     routeDecision,
     plannerResult,
     reasonerResult,
@@ -867,7 +1083,8 @@ export async function runTaskPipeline(
     providerResult,
     costEstimate,
     diagnostic,
-    pipeline: pipelineMachine.serialize(),
-    trace: trace.list(),
+    pipeline,
+    trace: traceEntries,
+    checkpoint,
   });
 }

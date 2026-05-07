@@ -17,6 +17,7 @@ import {
   TaskResponseSchema,
   type OrchestratorEvent,
   type OrchestratorRequest,
+  type RerunTaskRequest,
   type TaskRequest,
   type TaskResponse,
 } from '@llm-crane/schemas';
@@ -40,7 +41,8 @@ type PendingProtocolRequest = {
 
 type OutboundOrchestratorRequest =
   | Omit<Extract<OrchestratorRequest, { type: 'health' }>, 'id'>
-  | Omit<Extract<OrchestratorRequest, { type: 'runTask' }>, 'id'>;
+  | Omit<Extract<OrchestratorRequest, { type: 'runTask' }>, 'id'>
+  | Omit<Extract<OrchestratorRequest, { type: 'rerunTask' }>, 'id'>;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -75,6 +77,20 @@ export class OrchestratorProcessManager {
   async runTask(taskRequest: TaskRequest): Promise<OrchestratorDispatchResult> {
     const readyMode = await this.ensureReady();
     const event = await this.sendRequest({ type: 'runTask', request: taskRequest }, 'taskResult', 45000);
+    if (event.type !== 'taskResult') {
+      throw new Error(`Expected taskResult, received ${event.type}.`);
+    }
+
+    return {
+      response: TaskResponseSchema.parse(event.response),
+      readyMode,
+      processId: this.orchestratorProcess?.pid,
+    };
+  }
+
+  async rerunTask(rerun: RerunTaskRequest): Promise<OrchestratorDispatchResult> {
+    const readyMode = await this.ensureReady();
+    const event = await this.sendRequest({ type: 'rerunTask', rerun }, 'taskResult', 45000);
     if (event.type !== 'taskResult') {
       throw new Error(`Expected taskResult, received ${event.type}.`);
     }

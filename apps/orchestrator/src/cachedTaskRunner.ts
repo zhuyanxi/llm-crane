@@ -10,6 +10,7 @@ import {
 } from '@llm-crane/schemas';
 import { buildCachedPipelineState } from './pipelineStateMachine';
 import { runTaskPipeline } from './pipelineRunner';
+import { createTaskCheckpoint } from './taskCheckpoint';
 import { createTaskCacheKey, toPersistedTaskResponse, type CachedTaskRecord, type TaskCacheStore } from './taskCache';
 
 type TraceMetadata = Record<string, PipelineTraceMetadataValue>;
@@ -173,18 +174,39 @@ function buildCachedTaskResponse(
   taskRequest: TaskRequest,
   cachedRecord: CachedTaskRecord,
 ): TaskResponse {
+  const pipeline = buildCachedPipelineState(
+    taskRequest,
+    {
+      ...cachedRecord.response,
+      diagnostic: undefined,
+    },
+    createTimestamp,
+  );
+
+  const trace = buildHitTrace(createTimestamp, taskRequest, cachedRecord);
+  const checkpoint = cachedRecord.response.checkpoint ?? createTaskCheckpoint({
+    taskRequest,
+    routeDecision: cachedRecord.response.routeDecision,
+    plannerResult: cachedRecord.response.plannerResult,
+    reasonerResult: cachedRecord.response.reasonerResult,
+    pipeline,
+    trace,
+    capturedAt: cachedRecord.storedAt,
+  });
+
   return TaskResponseSchema.parse({
     ...cachedRecord.response,
+    runInfo: {
+      mode: 'full',
+      reusedCheckpointStages: [],
+      historyTraceCount: 0,
+      historyTransitionCount: 0,
+      detail: 'Cache replay of prior full pipeline run.',
+    },
     cacheInfo: buildCacheInfo('hit', cachedRecord.key, 'Cache hit; reused prior task response from SQLite store.', cachedRecord.storedAt),
-    pipeline: buildCachedPipelineState(
-      taskRequest,
-      {
-        ...cachedRecord.response,
-        diagnostic: undefined,
-      },
-      createTimestamp,
-    ),
-    trace: buildHitTrace(createTimestamp, taskRequest, cachedRecord),
+    pipeline,
+    trace,
+    checkpoint,
   });
 }
 
@@ -207,10 +229,31 @@ function annotateLiveResponse(
 
   updateTraceCount(trace);
 
+  const checkpoint = taskResponse.checkpoint ?? createTaskCheckpoint({
+    taskRequest,
+    routeDecision: taskResponse.routeDecision,
+    plannerResult: taskResponse.plannerResult,
+    reasonerResult: taskResponse.reasonerResult,
+    pipeline: taskResponse.pipeline,
+    trace,
+    capturedAt: taskResponse.trace.at(-1)?.timestamp ?? new Date().toISOString(),
+  });
+
   return TaskResponseSchema.parse({
     ...taskResponse,
+    runInfo: taskResponse.runInfo ?? {
+      mode: 'full',
+      reusedCheckpointStages: [],
+      historyTraceCount: 0,
+      historyTransitionCount: 0,
+      detail: 'Full pipeline run.',
+    },
     cacheInfo: buildCacheInfo(cacheInfoStatus, cacheKey, cacheInfoDetail, cachedAt),
     trace,
+    checkpoint: {
+      ...checkpoint,
+      trace,
+    },
   });
 }
 

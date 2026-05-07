@@ -105,12 +105,68 @@ describe('Orchestrator protocol schemas', () => {
     expect(parsed.request.cacheMode).toBe('bypass');
   });
 
+  it('parses rerunTask request envelope', () => {
+    const parsed = OrchestratorRequestSchema.parse({
+      id: 'req-2',
+      type: 'rerunTask',
+      rerun: {
+        targetStageId: 'planner',
+        checkpoint: {
+          taskRequest: {
+            task: 'Review selection',
+            cacheMode: 'default',
+            contexts: [
+              {
+                source: 'selection',
+                content: 'const value = 1;',
+                languageId: 'typescript',
+              },
+            ],
+          },
+          routeDecision: {
+            status: 'routed',
+            route: 'complex',
+            reason: 'Need planner.',
+            confidence: 0.7,
+            complexityScore: 6,
+            scoreBreakdown: [],
+            strategy: 'rules-v1',
+          },
+          pipeline: {
+            version: 'v1',
+            graph: 'complex-v1',
+            route: 'complex',
+            state: 'completed',
+            stages: [],
+            transitions: [],
+          },
+          trace: [],
+          capturedAt: '2026-05-05T00:00:04.000Z',
+        },
+      },
+    });
+
+    expect(parsed.type).toBe('rerunTask');
+    if (parsed.type !== 'rerunTask') {
+      throw new Error('Expected rerunTask envelope');
+    }
+
+    expect(parsed.rerun.targetStageId).toBe('planner');
+  });
+
   it('parses taskResult event envelope', () => {
     const parsed = OrchestratorEventSchema.parse({
       id: 'req-1',
       type: 'taskResult',
       response: {
         output: 'Task received.',
+        runInfo: {
+          mode: 'full',
+          reusedCheckpointStages: [],
+          historyTraceCount: 0,
+          historyTransitionCount: 0,
+          detail: 'Full pipeline run.',
+        },
         routeDecision: {
           status: 'routed',
           route: 'simple',
@@ -303,6 +359,75 @@ describe('Orchestrator protocol schemas', () => {
               timestamp: '2026-05-05T00:00:00.000Z',
             },
           ],
+        },
+        checkpoint: {
+          taskRequest: {
+            task: 'Review selection',
+            cacheMode: 'default',
+            contexts: [
+              {
+                source: 'selection',
+                content: 'const value = 1;',
+                languageId: 'typescript',
+              },
+            ],
+          },
+          routeDecision: {
+            status: 'routed',
+            route: 'simple',
+            reason: 'Narrow selection with low ambiguity.',
+            confidence: 0.82,
+            complexityScore: 2,
+            scoreBreakdown: [
+              {
+                factor: 'target-scope',
+                score: 0,
+                detail: 'Selection target keeps task narrow.',
+              },
+            ],
+            strategy: 'rules-v1',
+          },
+          pipeline: {
+            version: 'v1',
+            graph: 'simple-v1',
+            route: 'simple',
+            state: 'completed',
+            stages: [
+              {
+                stageId: 'request',
+                label: 'Request Intake',
+                state: 'completed',
+                dependsOn: [],
+                input: {
+                  stageId: 'request',
+                  taskChars: 12,
+                  contextCount: 1,
+                  constraintCount: 0,
+                  qualityBar: 'balanced',
+                },
+                output: {
+                  stageId: 'request',
+                  accepted: true,
+                },
+                startedAt: '2026-05-05T00:00:00.000Z',
+                completedAt: '2026-05-05T00:00:00.000Z',
+              },
+            ],
+            transitions: [],
+          },
+          trace: [
+            {
+              stage: 'executor.start',
+              status: 'completed',
+              timestamp: '2026-05-05T00:00:00.000Z',
+              metadata: {
+                runtimeId: 'lmstudio-local',
+                deploymentMode: 'local',
+                requestId: 'req-1',
+              },
+            },
+          ],
+          capturedAt: '2026-05-05T00:00:04.000Z',
         },
       },
     });

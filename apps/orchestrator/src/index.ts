@@ -16,6 +16,7 @@ import {
   type RuntimeConfig,
 } from '@llm-crane/schemas';
 import { runTaskWithCache } from './cachedTaskRunner';
+import { runTaskPipeline } from './pipelineRunner';
 import { resolveTaskCachePath, SQLiteTaskCache, type TaskCacheStore } from './taskCache';
 
 function logOrchestrator(message: string): void {
@@ -78,6 +79,35 @@ async function handleRequest(
           stage: 'orchestrator.runTask',
         });
       }
+      return;
+    case 'rerunTask':
+      try {
+        writeProtocolEvent({
+          id: request.id,
+          type: 'taskResult',
+          response: await runTaskPipeline(
+            config,
+            providerRegistry,
+            request.rerun.checkpoint.taskRequest,
+            {
+              createTimestamp,
+            },
+            {
+              mode: 'stage-rerun',
+              rerun: request.rerun,
+            },
+          ),
+        });
+      } catch (error) {
+        writeProtocolError(request.id, error, {
+          category: 'internal',
+          code: 'internal.rerun_task_failed',
+          summary: 'Stage rerun failed',
+          message: 'LLM Crane failed while handling stage rerun request.',
+          stage: 'orchestrator.rerunTask',
+        });
+      }
+      return;
   }
 }
 

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { LLMCraneDiagnosticError } from '@llm-crane/core';
-import { TaskRequestSchema, type TaskContext, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
+import { TaskRequestSchema, type RerunTaskRequest, type RerunnableStageId, type TaskContext, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
 import {
   OrchestratorProcessManager,
   type OrchestratorReadyMode,
@@ -11,17 +11,26 @@ const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
 
 type ContextCaptureMode = 'manual' | 'selection' | 'file' | 'auto';
 
-type TaskPanelInboundMessage = {
+type SubmitTaskPanelInboundMessage = {
   type: 'submitTask';
   value: string;
   contextMode: ContextCaptureMode;
   ignoreCache: boolean;
 };
 
+type RerunTaskPanelInboundMessage = {
+  type: 'rerunTask';
+  targetStageId: RerunnableStageId;
+};
+
+type TaskPanelInboundMessage = SubmitTaskPanelInboundMessage | RerunTaskPanelInboundMessage;
+
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 
 type TaskResultView = {
   output: string;
+  runModeSummary: string;
+  runModeDetail: string;
   selectedModel: string;
   runtimeSummary: string;
   selectionReason: string;
@@ -34,7 +43,13 @@ type TaskResultView = {
   latencySummary: string;
   costSummary: string;
   costDetail: string;
+  rerunTargets: RerunnableStageId[];
   traceEntries: string[];
+};
+
+type TaskPanelSession = {
+  latestResponse?: TaskResponse;
+  latestSubmittedTask?: string;
 };
 
 type TaskPanelStatusMessage = {
@@ -61,6 +76,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const panel = createTaskPanel();
     taskPanel = panel;
+    const panelSession: TaskPanelSession = {};
 
     panel.webview.html = getTaskPanelHtml(panel.webview);
     postTaskStatus(panel.webview, {
@@ -88,7 +104,7 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
-        await handleTaskPanelMessage(panel.webview, message, orchestratorManager);
+        await handleTaskPanelMessage(panel.webview, message, orchestratorManager, panelSession);
       },
       undefined,
       panelDisposables,
@@ -114,32 +130,107 @@ async function handleTaskPanelMessage(
   webview: vscode.Webview,
   message: unknown,
   processManager: OrchestratorProcessManager,
+  panelSession: TaskPanelSession,
 ): Promise<void> {
-  if (!isTaskPanelInboundMessage(message)) {
+  if (isSubmitTaskPanelInboundMessage(message)) {
+    const taskText = message.value.trim();
+    if (!taskText) {
+      postTaskStatus(webview, {
+        status: 'error',
+        headline: 'Task description required',
+        detail: 'Enter task text before submitting.',
+      });
+      return;
+    }
+
+    postTaskStatus(webview, {
+      status: 'running',
+      headline: 'Submitting task',
+      detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process${message.ignoreCache ? ' with cache bypass enabled' : ''}.`,
+      submittedTask: taskText,
+    });
+
+    try {
+      const taskRequest = buildTaskRequest(taskText, message.contextMode, message.ignoreCache);
+      const { response, readyMode, processId } = await processManager.runTask(taskRequest);
+      const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
+
+      panelSession.latestResponse = response;
+      panelSession.latestSubmittedTask = taskText;
+
+      postTaskStatus(webview, {
+        status: hasFailureDiagnostic ? 'error' : 'success',
+        headline: hasFailureDiagnostic
+          ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
+          : readyMode === 'started'
+            ? 'Orchestrator started and responded'
+            : 'Orchestrator response received',
+        detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
+        submittedTask: taskText,
+        requestPreview: JSON.stringify(taskRequest, null, 2),
+        resultView: createTaskResultView(response),
+      });
+    } catch (error) {
+      const headline = error instanceof LLMCraneDiagnosticError ? error.diagnostic.summary : 'Submission blocked';
+      const detail =
+        error instanceof LLMCraneDiagnosticError
+          ? formatDiagnosticDetail(error.diagnostic)
+          : error instanceof Error
+            ? error.message
+            : 'Unexpected LLM Crane error.';
+
+      postTaskStatus(webview, {
+        status: 'error',
+        headline,
+        detail,
+        submittedTask: taskText,
+      });
+    }
     return;
   }
 
-  const taskText = message.value.trim();
-  if (!taskText) {
+  if (!isRerunTaskPanelInboundMessage(message)) {
+    return;
+  }
+
+  if (!panelSession.latestResponse) {
     postTaskStatus(webview, {
       status: 'error',
-      headline: 'Task description required',
-      detail: 'Enter task text before submitting.',
+      headline: 'No checkpoint available',
+      detail: 'Run task once before stage rerun.',
+    });
+    return;
+  }
+
+  const submittedTask = panelSession.latestSubmittedTask ?? panelSession.latestResponse.checkpoint.taskRequest.task;
+  let rerunRequest: RerunTaskRequest;
+
+  try {
+    rerunRequest = buildRerunTaskRequest(panelSession.latestResponse, message.targetStageId);
+  } catch (error) {
+    postTaskStatus(webview, {
+      status: 'error',
+      headline: 'Stage rerun blocked',
+      detail: error instanceof Error ? error.message : 'Invalid stage rerun request.',
+      submittedTask,
+      resultView: createTaskResultView(panelSession.latestResponse),
     });
     return;
   }
 
   postTaskStatus(webview, {
     status: 'running',
-    headline: 'Submitting task',
-    detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process${message.ignoreCache ? ' with cache bypass enabled' : ''}.`,
-    submittedTask: taskText,
+    headline: 'Starting stage rerun',
+    detail: `Reusing checkpointed pipeline context and resuming from ${message.targetStageId}.`,
+    submittedTask,
   });
 
   try {
-    const taskRequest = buildTaskRequest(taskText, message.contextMode, message.ignoreCache);
-    const { response, readyMode, processId } = await processManager.runTask(taskRequest);
+    const { response, readyMode, processId } = await processManager.rerunTask(rerunRequest);
     const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
+
+    panelSession.latestResponse = response;
+    panelSession.latestSubmittedTask = submittedTask;
 
     postTaskStatus(webview, {
       status: hasFailureDiagnostic ? 'error' : 'success',
@@ -148,9 +239,9 @@ async function handleTaskPanelMessage(
         : readyMode === 'started'
           ? 'Orchestrator started and responded'
           : 'Orchestrator response received',
-      detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
-      submittedTask: taskText,
-      requestPreview: JSON.stringify(taskRequest, null, 2),
+      detail: `${formatTaskResponseSummary(response, readyMode, processId)} Retained ${response.runInfo.historyTraceCount} prior trace event(s).`,
+      submittedTask,
+      requestPreview: JSON.stringify(rerunRequest, null, 2),
       resultView: createTaskResultView(response),
     });
   } catch (error) {
@@ -166,17 +257,18 @@ async function handleTaskPanelMessage(
       status: 'error',
       headline,
       detail,
-      submittedTask: taskText,
+      submittedTask,
+      resultView: createTaskResultView(panelSession.latestResponse),
     });
   }
 }
 
-function isTaskPanelInboundMessage(message: unknown): message is TaskPanelInboundMessage {
+function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTaskPanelInboundMessage {
   if (typeof message !== 'object' || message === null) {
     return false;
   }
 
-  const candidate = message as Partial<TaskPanelInboundMessage>;
+  const candidate = message as Partial<SubmitTaskPanelInboundMessage>;
   return (
     candidate.type === 'submitTask' &&
     typeof candidate.value === 'string' &&
@@ -184,6 +276,19 @@ function isTaskPanelInboundMessage(message: unknown): message is TaskPanelInboun
     typeof candidate.ignoreCache === 'boolean' &&
     isContextCaptureMode(candidate.contextMode)
   );
+}
+
+function isRerunTaskPanelInboundMessage(message: unknown): message is RerunTaskPanelInboundMessage {
+  if (typeof message !== 'object' || message === null) {
+    return false;
+  }
+
+  const candidate = message as Partial<RerunTaskPanelInboundMessage>;
+  return candidate.type === 'rerunTask' && typeof candidate.targetStageId === 'string' && isRerunnableStageId(candidate.targetStageId);
+}
+
+function isRerunnableStageId(value: string): value is RerunnableStageId {
+  return value === 'structurizer' || value === 'router' || value === 'planner' || value === 'reasoner' || value === 'verifier' || value === 'executor';
 }
 
 function isContextCaptureMode(value: string): value is ContextCaptureMode {
@@ -196,6 +301,24 @@ function buildTaskRequest(task: string, contextMode: ContextCaptureMode, ignoreC
     cacheMode: ignoreCache ? 'bypass' : 'default',
     contexts: collectTaskContexts(contextMode),
   });
+}
+
+function getSupportedRerunTargets(taskResponse: TaskResponse): RerunnableStageId[] {
+  const route = taskResponse.checkpoint.routeDecision?.route ?? taskResponse.checkpoint.pipeline.route;
+  return route === 'complex'
+    ? ['structurizer', 'router', 'planner', 'reasoner', 'verifier', 'executor']
+    : ['structurizer', 'router', 'executor'];
+}
+
+function buildRerunTaskRequest(taskResponse: TaskResponse, targetStageId: RerunnableStageId): RerunTaskRequest {
+  if (!getSupportedRerunTargets(taskResponse).includes(targetStageId)) {
+    throw new Error(`Stage ${targetStageId} is unavailable for current checkpoint route.`);
+  }
+
+  return {
+    targetStageId,
+    checkpoint: taskResponse.checkpoint,
+  };
 }
 
 function collectTaskContexts(contextMode: ContextCaptureMode): TaskContext[] {
@@ -312,8 +435,28 @@ function formatTaskResponseSummary(
   const reasonerSuffix = taskResponse.reasonerResult
     ? ` Reasoner: ${taskResponse.reasonerResult.status}/${taskResponse.reasonerResult.decisionSource}.`
     : '';
+  const runSuffix = taskResponse.runInfo.mode === 'stage-rerun'
+    ? ` Execution: stage rerun from ${taskResponse.runInfo.targetStageId}.`
+    : ' Execution: full run.';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${runSuffix}${diagnosticSuffix}`;
+}
+
+function formatRunModeSummary(taskResponse: TaskResponse): string {
+  return taskResponse.runInfo.mode === 'stage-rerun'
+    ? `Stage rerun · ${taskResponse.runInfo.targetStageId}`
+    : 'Full run';
+}
+
+function formatRunModeDetail(taskResponse: TaskResponse): string {
+  const reusedStages = taskResponse.runInfo.reusedCheckpointStages.length > 0
+    ? ` reused=${taskResponse.runInfo.reusedCheckpointStages.join(',')}`
+    : '';
+  const historySuffix = taskResponse.runInfo.historyTraceCount > 0
+    ? ` historyTrace=${taskResponse.runInfo.historyTraceCount}`
+    : '';
+
+  return `${taskResponse.runInfo.detail}.${reusedStages}${historySuffix}`.trim();
 }
 
 function formatRuntimeSummary(selectedProvider: TaskResponse['selectedProvider']): string {
@@ -417,6 +560,15 @@ function formatReasonerEntries(taskResponse: TaskResponse): string[] {
   ];
 }
 
+function formatRunModeEntries(taskResponse: TaskResponse): string[] {
+  return [
+    `run/mode · ${taskResponse.runInfo.mode}${taskResponse.runInfo.targetStageId ? ` · target=${taskResponse.runInfo.targetStageId}` : ''} · ${taskResponse.runInfo.detail}`,
+    ...(taskResponse.runInfo.reusedCheckpointStages.length > 0
+      ? [`run/reused-stages · ${taskResponse.runInfo.reusedCheckpointStages.join(',')}`]
+      : []),
+  ];
+}
+
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
@@ -437,6 +589,8 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
 
   return {
     output: taskResponse.output,
+    runModeSummary: formatRunModeSummary(taskResponse),
+    runModeDetail: formatRunModeDetail(taskResponse),
     selectedModel: formatSelectedModel(taskResponse.selectedProvider),
     runtimeSummary: formatRuntimeSummary(taskResponse.selectedProvider),
     selectionReason: taskResponse.selectedProvider.reason,
@@ -449,7 +603,9 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     latencySummary,
     costSummary,
     costDetail,
+    rerunTargets: getSupportedRerunTargets(taskResponse),
     traceEntries: [
+      ...formatRunModeEntries(taskResponse),
       ...formatPlannerEntries(taskResponse),
       ...formatReasonerEntries(taskResponse),
       ...formatPipelineStageEntries(taskResponse),
@@ -857,11 +1013,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V0-S16</p>
+        <p class="eyebrow">V1-S04</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers output text, selected model, diagnostic state, cache state, execution path, readable trace, token usage, latency, and cost estimate.
+          step covers output text, selected model, diagnostic state, cache state, execution path, readable trace, token usage, latency, cost estimate, and stage rerun from checkpoint.
         </p>
       </header>
 
@@ -920,6 +1076,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <pre class="result-output" id="result-output"></pre>
         <div class="result-grid">
           <div class="meta-card">
+            <span class="preview-label">Execution mode</span>
+            <p class="meta-value" id="result-run-mode"></p>
+            <p class="hint" id="result-run-mode-detail"></p>
+          </div>
+          <div class="meta-card">
             <span class="preview-label">Selected runtime</span>
             <p class="meta-value" id="result-model"></p>
             <p class="hint" id="result-runtime"></p>
@@ -950,6 +1111,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="hint" id="result-cost-detail"></p>
           </div>
         </div>
+        <div class="actions">
+          <div class="action-buttons">
+            <select id="rerun-stage" disabled>
+              <option value="">Choose stage rerun target</option>
+            </select>
+            <button id="rerun-stage-button" type="button" class="secondary-button" disabled>Rerun From Stage</button>
+          </div>
+          <span class="hint" id="rerun-stage-hint">Run full task once to unlock stage rerun.</span>
+        </div>
         <div>
           <span class="preview-label">Trace</span>
           <ul class="trace-list" id="trace-list"></ul>
@@ -962,6 +1132,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
           <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
+          <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor when available.</li>
         </ol>
       </section>
     </main>
@@ -991,6 +1162,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultPanel = document.getElementById('result-panel');
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
+      const resultRunMode = document.getElementById('result-run-mode');
+      const resultRunModeDetail = document.getElementById('result-run-mode-detail');
       const resultModel = document.getElementById('result-model');
       const resultRuntime = document.getElementById('result-runtime');
       const resultReason = document.getElementById('result-reason');
@@ -1003,6 +1176,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultLatency = document.getElementById('result-latency');
       const resultCost = document.getElementById('result-cost');
       const resultCostDetail = document.getElementById('result-cost-detail');
+      const rerunStageSelect = document.getElementById('rerun-stage');
+      const rerunStageButton = document.getElementById('rerun-stage-button');
+      const rerunStageHint = document.getElementById('rerun-stage-hint');
       const traceList = document.getElementById('trace-list');
 
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
@@ -1031,6 +1207,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultPanel.hidden = false;
           resultModelChip.textContent = resultView.selectedModel;
           resultOutput.textContent = resultView.output;
+          resultRunMode.textContent = resultView.runModeSummary;
+          resultRunModeDetail.textContent = resultView.runModeDetail;
           resultModel.textContent = resultView.selectedModel;
           resultRuntime.textContent = resultView.runtimeSummary;
           resultReason.textContent = resultView.selectionReason;
@@ -1043,6 +1221,27 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = resultView.latencySummary;
           resultCost.textContent = resultView.costSummary;
           resultCostDetail.textContent = resultView.costDetail;
+          rerunStageSelect.replaceChildren(
+            ...[
+              (() => {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'Choose stage rerun target';
+                return option;
+              })(),
+              ...resultView.rerunTargets.map((stageId) => {
+                const option = document.createElement('option');
+                option.value = stageId;
+                option.textContent = stageId;
+                return option;
+              }),
+            ],
+          );
+          rerunStageSelect.disabled = resultView.rerunTargets.length === 0;
+          rerunStageButton.disabled = resultView.rerunTargets.length === 0;
+          rerunStageHint.textContent = resultView.rerunTargets.length > 0
+            ? 'Reuse latest checkpoint and rerun from selected stage.'
+            : 'Run full task once to unlock stage rerun.';
           traceList.replaceChildren(
             ...resultView.traceEntries.map((entry) => {
               const item = document.createElement('li');
@@ -1054,6 +1253,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultPanel.hidden = true;
           resultModelChip.textContent = '';
           resultOutput.textContent = '';
+          resultRunMode.textContent = '';
+          resultRunModeDetail.textContent = '';
           resultModel.textContent = '';
           resultRuntime.textContent = '';
           resultReason.textContent = '';
@@ -1066,6 +1267,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = '';
           resultCost.textContent = '';
           resultCostDetail.textContent = '';
+          rerunStageSelect.replaceChildren();
+          rerunStageSelect.disabled = true;
+          rerunStageButton.disabled = true;
+          rerunStageHint.textContent = 'Run full task once to unlock stage rerun.';
           traceList.replaceChildren();
         }
       }
@@ -1078,11 +1283,22 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache });
       }
 
+      function submitRerun() {
+        const targetStageId = rerunStageSelect.value;
+        if (!targetStageId) {
+          return;
+        }
+
+        setStatus('running', 'Starting stage rerun', 'Sending selected stage rerun request to extension host.', taskInput.value, '', '');
+        vscode.postMessage({ type: 'rerunTask', targetStageId });
+      }
+
       runTaskButton.addEventListener('click', () => submitTask());
       rerunBypassButton.addEventListener('click', () => {
         ignoreCacheInput.checked = true;
         submitTask(true);
       });
+      rerunStageButton.addEventListener('click', () => submitRerun());
       taskInput.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
           submitTask();

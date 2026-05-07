@@ -215,6 +215,101 @@ describe('runTaskPipeline', () => {
     expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'failed')).toBe(true);
   });
 
+  it('reruns complex pipeline from planner checkpoint and keeps prior trace history', async () => {
+    const providerRegistry = {
+      invoke: vi
+        .fn()
+        .mockResolvedValueOnce({
+          providerId: 'anthropic',
+          modelId: 'claude-3-5-sonnet-latest',
+          outputText: 'first complex result',
+          latencyMs: 210,
+        })
+        .mockResolvedValueOnce({
+          providerId: 'anthropic',
+          modelId: 'claude-3-5-sonnet-latest',
+          outputText: 'planner rerun result',
+          latencyMs: 190,
+        }),
+    };
+
+    const taskRequest: TaskRequest = {
+      task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+      qualityBar: 'high',
+      constraints: ['Keep public API stable'],
+      contexts: [
+        {
+          source: 'workspace',
+          uri: '/workspace',
+          content: 'workspace snapshot',
+        },
+      ],
+    };
+
+    const firstResponse = await runTaskPipeline(runtimeConfig, providerRegistry as never, taskRequest);
+    const rerunResponse = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      firstResponse.checkpoint.taskRequest,
+      {},
+      {
+        mode: 'stage-rerun',
+        rerun: {
+          targetStageId: 'planner',
+          checkpoint: firstResponse.checkpoint,
+        },
+      },
+    );
+
+    expect(rerunResponse.output).toBe('planner rerun result');
+    expect(rerunResponse.runInfo.mode).toBe('stage-rerun');
+    expect(rerunResponse.runInfo.targetStageId).toBe('planner');
+    expect(rerunResponse.runInfo.reusedCheckpointStages).toEqual(['structurizer', 'router']);
+    expect(rerunResponse.runInfo.historyTraceCount).toBe(firstResponse.trace.length);
+    expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'structurizer')?.state).toBe('skipped');
+    expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'router')?.state).toBe('skipped');
+    expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
+    expect(rerunResponse.trace.some((event) => event.stage === 'rerun.resume' && event.status === 'completed')).toBe(true);
+    expect(rerunResponse.trace.length).toBeGreaterThan(firstResponse.trace.length);
+  });
+
+  it('rejects unsupported planner rerun target for simple checkpoint', async () => {
+    const providerRegistry = createProviderRegistryStub('simple result');
+    const firstResponse = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+      },
+    );
+
+    await expect(
+      runTaskPipeline(
+        runtimeConfig,
+        providerRegistry as never,
+        firstResponse.checkpoint.taskRequest,
+        {},
+        {
+          mode: 'stage-rerun',
+          rerun: {
+            targetStageId: 'planner',
+            checkpoint: firstResponse.checkpoint,
+          },
+        },
+      ),
+    ).rejects.toThrow('unsupported for simple pipeline checkpoint');
+  });
+
   it('returns unified failed task response when executor stage crashes', async () => {
     const providerRegistry = createProviderRegistryStub('unused');
 

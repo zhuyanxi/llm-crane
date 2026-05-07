@@ -309,6 +309,8 @@ export const PipelineStageIdSchema = z.enum([
   'response',
 ]);
 
+export const RerunnableStageIdSchema = z.enum(['structurizer', 'router', 'planner', 'reasoner', 'verifier', 'executor']);
+
 const CountSchema = z.number().int().nonnegative();
 
 export const PipelineStageInputSchema = z.discriminatedUnion('stageId', [
@@ -475,8 +477,36 @@ export const PipelineStateSchema = z.object({
   transitions: z.array(PipelineStateTransitionSchema).default([]),
 });
 
+export const TaskExecutionModeSchema = z.enum(['full', 'stage-rerun']);
+
+export const TaskRunInfoSchema = z.object({
+  mode: TaskExecutionModeSchema,
+  targetStageId: RerunnableStageIdSchema.optional(),
+  reusedCheckpointStages: z.array(RerunnableStageIdSchema).default([]),
+  historyTraceCount: CountSchema,
+  historyTransitionCount: CountSchema,
+  detail: z.string().min(1),
+});
+
+export const PipelineCheckpointSchema = z.object({
+  taskRequest: TaskRequestSchema,
+  structurizerResult: StructurizerResultSchema.optional(),
+  routeDecision: RouteDecisionSchema.optional(),
+  plannerResult: PlannerResultSchema.optional(),
+  reasonerResult: ReasonerResultSchema.optional(),
+  pipeline: PipelineStateSchema,
+  trace: z.array(PipelineTraceEventSchema),
+  capturedAt: z.string().datetime(),
+});
+
+export const RerunTaskRequestSchema = z.object({
+  targetStageId: RerunnableStageIdSchema,
+  checkpoint: PipelineCheckpointSchema,
+});
+
 export const TaskResponseSchema = z.object({
   output: z.string().min(1),
+  runInfo: TaskRunInfoSchema,
   routeDecision: RouteDecisionSchema,
   plannerResult: PlannerResultSchema.optional(),
   reasonerResult: ReasonerResultSchema.optional(),
@@ -487,6 +517,7 @@ export const TaskResponseSchema = z.object({
   diagnostic: DiagnosticSchema.optional(),
   pipeline: PipelineStateSchema,
   trace: z.array(PipelineTraceEventSchema),
+  checkpoint: PipelineCheckpointSchema,
 });
 
 export const OrchestratorRequestSchema = z.discriminatedUnion('type', [
@@ -498,6 +529,11 @@ export const OrchestratorRequestSchema = z.discriminatedUnion('type', [
     id: z.string().min(1),
     type: z.literal('runTask'),
     request: TaskRequestSchema,
+  }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('rerunTask'),
+    rerun: RerunTaskRequestSchema,
   }),
 ]);
 
@@ -589,11 +625,16 @@ export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type PipelineExecutionState = z.infer<typeof PipelineExecutionStateSchema>;
 export type PipelineGraph = z.infer<typeof PipelineGraphSchema>;
 export type PipelineStageId = z.infer<typeof PipelineStageIdSchema>;
+export type RerunnableStageId = z.infer<typeof RerunnableStageIdSchema>;
 export type PipelineStageInput = z.infer<typeof PipelineStageInputSchema>;
 export type PipelineStageOutput = z.infer<typeof PipelineStageOutputSchema>;
 export type PipelineStageState = z.infer<typeof PipelineStageStateSchema>;
 export type PipelineStateTransition = z.infer<typeof PipelineStateTransitionSchema>;
 export type PipelineState = z.infer<typeof PipelineStateSchema>;
+export type TaskExecutionMode = z.infer<typeof TaskExecutionModeSchema>;
+export type TaskRunInfo = z.infer<typeof TaskRunInfoSchema>;
+export type PipelineCheckpoint = z.infer<typeof PipelineCheckpointSchema>;
+export type RerunTaskRequest = z.infer<typeof RerunTaskRequestSchema>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 export type OrchestratorRequest = z.infer<typeof OrchestratorRequestSchema>;
 export type OrchestratorEvent = z.infer<typeof OrchestratorEventSchema>;
