@@ -53,6 +53,26 @@ describe('structurizeTaskRequest', () => {
     expect(result.structuredTask.openQuestions).toHaveLength(0);
   });
 
+  it('keeps leading analysis verb over later fix keyword', () => {
+    const result = structurizeTaskRequest(
+      makeTaskRequest('Analyze whole workspace for architecture risk and propose robust fixes.', {
+        qualityBar: 'high',
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+        constraints: ['Keep public API stable'],
+      }),
+    );
+
+    expect(result.status).toBe('structured');
+    expect(result.structuredTask.taskType).toBe('analysis');
+    expect(result.structuredTask.openQuestions).toHaveLength(0);
+  });
+
   it('marks fallback when analysis task misses concrete target', () => {
     const result = structurizeTaskRequest(makeTaskRequest('Analyze this.'));
 

@@ -63,6 +63,11 @@ function detectTaskType(taskRequest: TaskRequest): StructuredTaskType {
   }
 
   const text = normalizeText(taskRequest.task).toLowerCase();
+  const leadingRule = TASK_TYPE_RULES.find((rule) => rule.keywords.some((keyword) => text === keyword || text.startsWith(`${keyword} `)));
+  if (leadingRule) {
+    return leadingRule.taskType;
+  }
+
   const matchedRule = TASK_TYPE_RULES.find((rule) => hasKeyword(text, rule.keywords));
   return matchedRule?.taskType ?? 'other';
 }

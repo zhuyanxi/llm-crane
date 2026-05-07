@@ -119,12 +119,54 @@ describe('runTaskPipeline', () => {
     expect(response.costEstimate.status).toBe('estimated');
     expect(response.diagnostic).toBeUndefined();
     expect(response.costEstimate.totalTokens).toBeGreaterThan(0);
+    expect(response.plannerResult?.status).toBe('planned');
+    expect(response.plannerResult?.steps.length).toBeGreaterThan(0);
     expect(response.pipeline.graph).toBe('complex-v1');
     expect(response.pipeline.state).toBe('completed');
-    expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('skipped');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
+    expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+  });
+
+  it('falls back to conservative planner output when planner stage crashes', async () => {
+    const providerRegistry = {
+      invoke: vi.fn().mockResolvedValue({
+        providerId: 'anthropic',
+        modelId: 'claude-3-5-sonnet-latest',
+        outputText: 'complex result with planner fallback',
+        latencyMs: 240,
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+      },
+      {
+        planTask: () => {
+          throw new Error('planner exploded');
+        },
+      },
+    );
+
+    expect(response.providerResult.status).toBe('completed');
+    expect(response.plannerResult?.status).toBe('fallback');
+    expect(response.plannerResult?.fallbackReason).toContain('Planner stage crashed');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
+    expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'failed')).toBe(true);
   });
 
   it('returns unified failed task response when executor stage crashes', async () => {

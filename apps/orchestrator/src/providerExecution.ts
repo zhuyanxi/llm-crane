@@ -124,8 +124,12 @@ export async function invokeRoutedProvider(
       metadata: {
         route: routeDecision.route,
         taskType: structurizerResult.structuredTask.taskType,
-        plannerStatus: plannerResult?.status,
-        planStepCount: plannerResult?.steps.length,
+        ...(plannerResult
+          ? {
+              plannerStatus: plannerResult.status,
+              planStepCount: String(plannerResult.steps.length),
+            }
+          : {}),
       },
     });
 

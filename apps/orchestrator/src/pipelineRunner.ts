@@ -178,47 +178,49 @@ function createRouterStageError(routeDecision: RouteDecision): PipelineTraceErro
     : undefined;
 }
 
-function annotateComplexGraphSkips(
+function createPlannerStageError(plannerResult: PlannerResult): PipelineTraceError | undefined {
+  return plannerResult.fallbackReason
+    ? {
+        code: 'planner_fallback',
+        message: plannerResult.fallbackReason,
+      }
+    : undefined;
+}
+
+function annotateComplexFollowUpSkips(
   trace: ReturnType<typeof createTraceCollector>,
   pipelineMachine: ReturnType<typeof createPipelineStateMachine>,
   taskRequest: TaskRequest,
-  structurizerResult: StructurizerResult,
   routeDecision: RouteDecision,
+  plannerResult: PlannerResult,
 ): void {
   if (routeDecision.route !== 'complex') {
     return;
   }
 
-  const plannerDetail = 'Planner stage reserved for V1-S02; complex graph records skipped stage and continues to executor.';
-  pipelineMachine.skipStage('planner', plannerDetail, createPlannerStageOutput('skipped', plannerDetail), {
-    input: createPlannerStageInput(routeDecision, structurizerResult),
-  });
-  trace.add('planner.finish', 'skipped', plannerDetail, {
-    metadata: compactMetadata({
-      route: routeDecision.route,
-      taskType: structurizerResult.structuredTask.taskType,
-    }),
-  });
-
-  const reasonerDetail = 'Reasoner stage reserved for V1-S03; state machine records early exit for V1-S01.';
+  const reasonerDetail = 'Reasoner stage reserved for V1-S03; planner output captured and stored for downstream reuse.';
   pipelineMachine.skipStage('reasoner', reasonerDetail, createReasonerStageOutput('skipped', reasonerDetail, false), {
-    input: createReasonerStageInput(taskRequest, routeDecision, false),
+    input: createReasonerStageInput(taskRequest, routeDecision, true, plannerResult.status, plannerResult.steps.length),
   });
   trace.add('reasoner.finish', 'skipped', reasonerDetail, {
     metadata: compactMetadata({
       route: routeDecision.route,
-      plannerAvailable: false,
+      plannerAvailable: true,
+      plannerStatus: plannerResult.status,
+      planStepCount: plannerResult.steps.length,
     }),
   });
 
-  const verifierDetail = 'Verifier stage not enabled in V1-S01; state machine keeps graph terminal and serializable.';
+  const verifierDetail = 'Verifier stage not enabled in V1-S02; planner output remains available for future verifier checks.';
   pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail), {
-    input: createVerifierStageInput(routeDecision, true),
+    input: createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
   });
   trace.add('verifier.finish', 'skipped', verifierDetail, {
     metadata: compactMetadata({
       route: routeDecision.route,
       providerReady: true,
+      plannerStatus: plannerResult.status,
+      planStepCount: plannerResult.steps.length,
     }),
   });
 }
@@ -385,7 +387,82 @@ export async function runTaskPipeline(
     });
   }
 
-  annotateComplexGraphSkips(trace, pipelineMachine, taskRequest, structurizerResult, routeDecision);
+  let plannerResult: PlannerResult | undefined;
+
+  if (routeDecision.route === 'complex') {
+    trace.add('planner.start', 'running', 'Planner stage started.', {
+      metadata: compactMetadata({
+        route: routeDecision.route,
+        taskType: structurizerResult.structuredTask.taskType,
+        openQuestions: structurizerResult.structuredTask.openQuestions.length,
+      }),
+    });
+    pipelineMachine.startStage('planner', createPlannerStageInput(routeDecision, structurizerResult));
+
+    try {
+      const plannerPrompt = dependencies.buildPlannerPrompt(taskRequest, structurizerResult, routeDecision);
+      trace.add(
+        'planner.prompt',
+        'completed',
+        `promptChars=${plannerPrompt.length}; systemPromptChars=${PLANNER_SYSTEM_PROMPT.length}`,
+        {
+          metadata: compactMetadata({
+            promptChars: plannerPrompt.length,
+            systemPromptChars: PLANNER_SYSTEM_PROMPT.length,
+          }),
+        },
+      );
+
+      plannerResult = dependencies.planTask(taskRequest, structurizerResult, routeDecision);
+      pipelineMachine.updateContext({
+        plannerResult,
+      });
+      pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
+        error: createPlannerStageError(plannerResult),
+      });
+      trace.add(
+        'planner.finish',
+        plannerResult.status === 'planned' ? 'completed' : 'failed',
+        `status=${plannerResult.status}; steps=${plannerResult.steps.length}; decisionPoints=${plannerResult.decisionPoints.length}`,
+        {
+          metadata: compactMetadata({
+            plannerStatus: plannerResult.status,
+            planStepCount: plannerResult.steps.length,
+            decisionPointCount: plannerResult.decisionPoints.length,
+            openQuestionCount: plannerResult.openQuestions.length,
+          }),
+          error: createPlannerStageError(plannerResult),
+        },
+      );
+    } catch (error) {
+      const reason = `Planner stage crashed: ${toErrorMessage(error)}`;
+      plannerResult = createFallbackPlannerResult(taskRequest, structurizerResult, routeDecision, reason);
+      pipelineMachine.updateContext({
+        plannerResult,
+      });
+      pipelineMachine.completeStage('planner', createPlannerStageOutput(plannerResult), {
+        detail: reason,
+        error: {
+          code: 'planner_crash',
+          message: reason,
+        },
+      });
+      trace.add('planner.finish', 'failed', reason, {
+        metadata: compactMetadata({
+          plannerStatus: plannerResult.status,
+          planStepCount: plannerResult.steps.length,
+          decisionPointCount: plannerResult.decisionPoints.length,
+          openQuestionCount: plannerResult.openQuestions.length,
+        }),
+        error: {
+          code: 'planner_crash',
+          message: reason,
+        },
+      });
+    }
+
+    annotateComplexFollowUpSkips(trace, pipelineMachine, taskRequest, routeDecision, plannerResult);
+  }
 
   const modelId = getModelIdForRoute(config, routeDecision);
   const providerTarget = resolveProviderTarget(providerRegistry, modelId);
@@ -410,7 +487,7 @@ export async function runTaskPipeline(
   let diagnostic: Diagnostic | undefined;
 
   try {
-    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision);
+    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult);
     trace.add(
       'executor.prompt',
       'completed',
@@ -429,6 +506,7 @@ export async function runTaskPipeline(
       taskRequest,
       structurizerResult,
       routeDecision,
+      plannerResult,
     );
     pipelineMachine.updateContext({
       providerResult,
@@ -610,6 +688,7 @@ export async function runTaskPipeline(
   return TaskResponseSchema.parse({
     output,
     routeDecision,
+    plannerResult,
     selectedProvider: {
       providerId: providerResult.providerId,
       runtimeId: providerTarget.runtimeId,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ProviderInvocationError } from '@llm-crane/providers';
-import type { RouteDecision, StructurizerResult, TaskRequest } from '@llm-crane/schemas';
+import type { PlannerResult, RouteDecision, StructurizerResult, TaskRequest } from '@llm-crane/schemas';
 import { buildProviderUserPrompt, invokeRoutedProvider } from '../src/providerExecution';
 
 const baseTaskRequest: TaskRequest = {
@@ -53,13 +53,54 @@ const baseRouteDecision: RouteDecision = {
   strategy: 'rules-v1',
 };
 
+const basePlannerResult: PlannerResult = {
+  status: 'planned',
+  summary: 'Execution plan for analysis task with 3 ordered steps.',
+  steps: [
+    {
+      stepId: 'inspect-context',
+      title: 'Inspect context and target',
+      objective: 'Review attached contexts and constraints.',
+      acceptance: 'Prompt reflects context and constraints.',
+    },
+    {
+      stepId: 'survey-target',
+      title: 'Survey target and risks',
+      objective: 'Inspect target and identify main risks.',
+      acceptance: 'Prompt names key files and risk areas.',
+    },
+    {
+      stepId: 'deliver-answer',
+      title: 'Deliver bounded final answer',
+      objective: 'Return bounded answer with validation notes.',
+      acceptance: 'Prompt requests explicit risks and next validation.',
+    },
+  ],
+  decisionPoints: [
+    {
+      question: 'Proceed conservatively?',
+      whyItMatters: 'Missing detail may widen scope.',
+      options: ['Yes', 'No'],
+      defaultChoice: 'Yes',
+    },
+  ],
+  openQuestions: [],
+  downstreamHints: {
+    reasonerFocus: ['Keep main risk explicit.'],
+    verifierChecks: ['Check public API stability.'],
+  },
+  warnings: [],
+};
+
 describe('buildProviderUserPrompt', () => {
-  it('includes task, structure, route, and contexts', () => {
-    const prompt = buildProviderUserPrompt(baseTaskRequest, baseStructurizerResult, baseRouteDecision);
+  it('includes task, structure, route, planner result, and contexts', () => {
+    const prompt = buildProviderUserPrompt(baseTaskRequest, baseStructurizerResult, baseRouteDecision, basePlannerResult);
 
     expect(prompt).toContain('Original task:');
     expect(prompt).toContain('Structured task:');
     expect(prompt).toContain('Route decision:');
+    expect(prompt).toContain('Planner result:');
+    expect(prompt).toContain('Execution plan for analysis task');
     expect(prompt).toContain('/workspace/src/app.ts');
   });
 });
@@ -84,6 +125,7 @@ describe('invokeRoutedProvider', () => {
       baseTaskRequest,
       baseStructurizerResult,
       baseRouteDecision,
+      basePlannerResult,
     );
 
     expect(result.status).toBe('completed');
@@ -107,6 +149,7 @@ describe('invokeRoutedProvider', () => {
       { ...baseTaskRequest, qualityBar: 'fast' },
       { ...baseStructurizerResult, structuredTask: { ...baseStructurizerResult.structuredTask, qualityBar: 'fast' } },
       { ...baseRouteDecision, route: 'simple' },
+      undefined,
     );
 
     expect(result.status).toBe('failed');

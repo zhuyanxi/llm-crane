@@ -306,8 +306,11 @@ function formatTaskResponseSummary(
     ? ` via ${taskResponse.selectedProvider.runtimeId}/${taskResponse.selectedProvider.deploymentMode ?? 'unknown'}`
     : '';
   const pipelineSuffix = ` Pipeline: ${taskResponse.pipeline.graph}/${taskResponse.pipeline.state}.`;
+  const plannerSuffix = taskResponse.plannerResult
+    ? ` Planner: ${taskResponse.plannerResult.status}/${taskResponse.plannerResult.steps.length} steps.`
+    : '';
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${diagnosticSuffix}`;
 }
 
 function formatRuntimeSummary(selectedProvider: TaskResponse['selectedProvider']): string {
@@ -388,6 +391,17 @@ function formatPipelineTransitionEntries(taskResponse: TaskResponse): string[] {
   });
 }
 
+function formatPlannerEntries(taskResponse: TaskResponse): string[] {
+  if (!taskResponse.plannerResult) {
+    return [];
+  }
+
+  return [
+    `planner/result · ${taskResponse.plannerResult.status} · steps=${taskResponse.plannerResult.steps.length}, decisionPoints=${taskResponse.plannerResult.decisionPoints.length} · ${taskResponse.plannerResult.summary}`,
+    ...taskResponse.plannerResult.steps.map((step) => `planner/step/${step.stepId} · ${step.title} · ${step.objective}`),
+  ];
+}
+
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
@@ -420,7 +434,12 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     latencySummary,
     costSummary,
     costDetail,
-    traceEntries: [...formatPipelineStageEntries(taskResponse), ...formatPipelineTransitionEntries(taskResponse), ...traceEntries],
+    traceEntries: [
+      ...formatPlannerEntries(taskResponse),
+      ...formatPipelineStageEntries(taskResponse),
+      ...formatPipelineTransitionEntries(taskResponse),
+      ...traceEntries,
+    ],
   };
 }
 
