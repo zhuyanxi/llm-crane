@@ -5,15 +5,15 @@
 
 Local-first, developer-first LLM orchestrator for VS Code.
 
-LLM Crane runs task requests through local orchestration instead of sending everything straight to one large model. Current V0 gives users visible routing, trace, cost estimate, cache status, and failure diagnostics inside VS Code.
+LLM Crane runs task requests through local orchestration instead of sending everything straight to one large model. Current build gives users visible routing, serialized pipeline state, trace, cost estimate, cache status, and failure diagnostics inside VS Code.
 
 ## For Users
 
 ### What you get
 
 - Run task from VS Code Command Palette with manual, selection, file, or auto context.
-- Route task through Structurizer -> Router -> Executor pipeline.
-- See selected model, execution path, token usage, latency, and estimated cost.
+- Route task through staged pipeline graphs instead of one opaque model call.
+- See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
 - See classified diagnostics for configuration, provider, schema, and internal failures.
 
@@ -52,6 +52,7 @@ Run inside VS Code:
 
 - Output text from task execution
 - Selected provider/model
+- Pipeline graph, stage states, and execution path summary
 - Diagnostic summary when request fails or returns failure state
 - Cache hit, miss, or bypassed state
 - Execution trace summary
@@ -189,6 +190,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
 - Pipeline returns unified `taskResult` payload even when executor stage fails
+- `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`
 - Cache uses SQLite-backed local storage with stable task fingerprint and `cache.lookup` / `cache.hit` trace stages

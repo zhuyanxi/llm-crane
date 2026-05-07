@@ -76,6 +76,130 @@ function createTaskResponse(output: string): TaskResponse {
       latencyMs: 120,
       detail: 'Estimated from provider-reported token usage and local price catalog.',
     },
+    pipeline: {
+      version: 'v1',
+      graph: 'simple-v1',
+      route: 'simple',
+      state: 'completed',
+      stages: [
+        {
+          stageId: 'request',
+          label: 'Request Intake',
+          state: 'completed',
+          dependsOn: [],
+          input: {
+            stageId: 'request',
+            taskChars: baseTaskRequest.task.length,
+            contextCount: baseTaskRequest.contexts.length,
+            constraintCount: baseTaskRequest.constraints.length,
+            qualityBar: baseTaskRequest.qualityBar,
+          },
+          output: {
+            stageId: 'request',
+            accepted: true,
+          },
+          startedAt: '2026-05-05T00:00:00.000Z',
+          completedAt: '2026-05-05T00:00:00.000Z',
+        },
+        {
+          stageId: 'structurizer',
+          label: 'Structurizer',
+          state: 'completed',
+          dependsOn: ['request'],
+          input: {
+            stageId: 'structurizer',
+            taskChars: baseTaskRequest.task.length,
+            contextCount: baseTaskRequest.contexts.length,
+          },
+          output: {
+            stageId: 'structurizer',
+            status: 'structured',
+            taskType: 'analysis',
+            targetKind: 'file',
+            warningCount: 0,
+          },
+          startedAt: '2026-05-05T00:00:00.000Z',
+          completedAt: '2026-05-05T00:00:01.000Z',
+        },
+        {
+          stageId: 'router',
+          label: 'Router',
+          state: 'completed',
+          dependsOn: ['structurizer'],
+          input: {
+            stageId: 'router',
+            structurizerStatus: 'structured',
+            taskType: 'analysis',
+            openQuestions: 0,
+            warningCount: 0,
+          },
+          output: {
+            stageId: 'router',
+            status: 'routed',
+            route: 'simple',
+            complexityScore: 2,
+            confidence: 0.8,
+          },
+          startedAt: '2026-05-05T00:00:01.000Z',
+          completedAt: '2026-05-05T00:00:01.000Z',
+        },
+        {
+          stageId: 'executor',
+          label: 'Executor',
+          state: 'completed',
+          dependsOn: ['router'],
+          input: {
+            stageId: 'executor',
+            route: 'simple',
+            providerId: 'openai',
+            modelId: 'gpt-4o-mini',
+          },
+          output: {
+            stageId: 'executor',
+            status: 'completed',
+            providerId: 'openai',
+            modelId: 'gpt-4o-mini',
+            latencyMs: 120,
+          },
+          startedAt: '2026-05-05T00:00:01.000Z',
+          completedAt: '2026-05-05T00:00:02.000Z',
+        },
+        {
+          stageId: 'response',
+          label: 'Response Assembly',
+          state: 'completed',
+          dependsOn: ['executor'],
+          input: {
+            stageId: 'response',
+            providerStatus: 'completed',
+            costStatus: 'exact',
+            diagnosticPresent: false,
+          },
+          output: {
+            stageId: 'response',
+            outputChars: output.length,
+            providerStatus: 'completed',
+            costStatus: 'exact',
+          },
+          startedAt: '2026-05-05T00:00:02.000Z',
+          completedAt: '2026-05-05T00:00:03.000Z',
+        },
+      ],
+      transitions: [
+        {
+          stageId: 'request',
+          fromState: 'pending',
+          toState: 'running',
+          timestamp: '2026-05-05T00:00:00.000Z',
+        },
+        {
+          stageId: 'request',
+          fromState: 'running',
+          toState: 'completed',
+          timestamp: '2026-05-05T00:00:00.000Z',
+        },
+      ],
+    },
     trace: [
       {
         stage: 'pipeline.start',
@@ -172,6 +296,8 @@ describe('runTaskWithCache', () => {
 
     expect(response.output).toBe('cached output');
     expect(response.cacheInfo?.status).toBe('hit');
+    expect(response.pipeline.graph).toBe('simple-v1');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('skipped');
     expect(response.trace.some((event) => event.stage === 'cache.hit' && event.status === 'completed')).toBe(true);
     expect(pipelineSpy).not.toHaveBeenCalled();
   });
@@ -189,6 +315,7 @@ describe('runTaskWithCache', () => {
     expect(response.output).toBe('live output');
     expect(response.cacheInfo?.status).toBe('miss');
     expect(response.cacheInfo?.createdAt).toBe('2026-05-05T00:02:00.000Z');
+    expect(response.pipeline.state).toBe('completed');
     expect(response.trace.some((event) => event.stage === 'cache.lookup' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'cache.write' && event.status === 'completed')).toBe(true);
     expect(taskCache.set).toHaveBeenCalledTimes(1);

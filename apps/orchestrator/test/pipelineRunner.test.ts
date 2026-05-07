@@ -71,6 +71,10 @@ describe('runTaskPipeline', () => {
     expect(response.diagnostic).toBeUndefined();
     expect(response.costEstimate.totalCostUsd).toBeGreaterThan(0);
     expect(response.output).toBe('simple result');
+    expect(response.pipeline.graph).toBe('simple-v1');
+    expect(response.pipeline.state).toBe('completed');
+    expect(response.pipeline.stages.some((stage) => stage.stageId === 'planner')).toBe(false);
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('completed');
     expect(response.trace.some((event) => event.stage === 'request.received' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.cost' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'response.output' && event.status === 'completed')).toBe(true);
@@ -115,6 +119,11 @@ describe('runTaskPipeline', () => {
     expect(response.costEstimate.status).toBe('estimated');
     expect(response.diagnostic).toBeUndefined();
     expect(response.costEstimate.totalTokens).toBeGreaterThan(0);
+    expect(response.pipeline.graph).toBe('complex-v1');
+    expect(response.pipeline.state).toBe('completed');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
   });
 
@@ -149,6 +158,9 @@ describe('runTaskPipeline', () => {
     expect(response.diagnostic?.category).toBe('internal');
     expect(response.diagnostic?.code).toBe('internal.executor_prompt_crash');
     expect(response.output).toContain('Task execution failed');
+    expect(response.pipeline.state).toBe('failed');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('failed');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'response')?.state).toBe('completed');
     expect(response.trace.some((event) => event.stage === 'executor.prompt' && event.status === 'failed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'skipped')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'pipeline.finish' && event.status === 'failed')).toBe(true);

@@ -231,6 +231,164 @@ export const TaskRequestSchema = z.object({
   policyOverrides: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const PipelineExecutionStateSchema = z.enum(['pending', 'running', 'completed', 'failed', 'skipped']);
+
+export const PipelineGraphSchema = z.enum(['simple-v1', 'complex-v1']);
+
+export const PipelineStageIdSchema = z.enum([
+  'request',
+  'structurizer',
+  'router',
+  'planner',
+  'reasoner',
+  'verifier',
+  'executor',
+  'response',
+]);
+
+const CountSchema = z.number().int().nonnegative();
+
+export const PipelineStageInputSchema = z.discriminatedUnion('stageId', [
+  z.object({
+    stageId: z.literal('request'),
+    taskChars: CountSchema,
+    contextCount: CountSchema,
+    constraintCount: CountSchema,
+    qualityBar: QualityBarSchema,
+  }),
+  z.object({
+    stageId: z.literal('structurizer'),
+    taskChars: CountSchema,
+    contextCount: CountSchema,
+  }),
+  z.object({
+    stageId: z.literal('router'),
+    structurizerStatus: z.enum(['structured', 'fallback']),
+    taskType: StructuredTaskTypeSchema,
+    openQuestions: CountSchema,
+    warningCount: CountSchema,
+  }),
+  z.object({
+    stageId: z.literal('planner'),
+    route: RouteTierSchema,
+    taskType: StructuredTaskTypeSchema,
+    openQuestions: CountSchema,
+  }),
+  z.object({
+    stageId: z.literal('reasoner'),
+    route: RouteTierSchema,
+    qualityBar: QualityBarSchema,
+    plannerAvailable: z.boolean(),
+  }),
+  z.object({
+    stageId: z.literal('verifier'),
+    route: RouteTierSchema,
+    providerReady: z.boolean(),
+  }),
+  z.object({
+    stageId: z.literal('executor'),
+    route: RouteTierSchema,
+    providerId: ProviderIdSchema,
+    modelId: z.string().min(1),
+    runtimeId: z.string().min(1).optional(),
+    deploymentMode: ProviderDeploymentModeSchema.optional(),
+    apiFamily: ProviderApiFamilySchema.optional(),
+  }),
+  z.object({
+    stageId: z.literal('response'),
+    providerStatus: z.enum(['completed', 'failed']),
+    costStatus: CostEstimateStatusSchema,
+    diagnosticPresent: z.boolean(),
+  }),
+]);
+
+export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
+  z.object({
+    stageId: z.literal('request'),
+    accepted: z.literal(true),
+  }),
+  z.object({
+    stageId: z.literal('structurizer'),
+    status: z.enum(['structured', 'fallback']),
+    taskType: StructuredTaskTypeSchema,
+    targetKind: StructuredTaskTargetKindSchema,
+    warningCount: CountSchema,
+    fallbackReason: z.string().min(1).optional(),
+  }),
+  z.object({
+    stageId: z.literal('router'),
+    status: z.enum(['routed', 'fallback']),
+    route: RouteTierSchema,
+    complexityScore: CountSchema,
+    confidence: z.number().min(0).max(1),
+    fallbackReason: z.string().min(1).optional(),
+  }),
+  z.object({
+    stageId: z.literal('planner'),
+    status: z.enum(['completed', 'skipped']),
+    planStepCount: CountSchema,
+    detail: z.string().min(1),
+  }),
+  z.object({
+    stageId: z.literal('reasoner'),
+    status: z.enum(['completed', 'skipped']),
+    needReasoning: z.boolean(),
+    detail: z.string().min(1),
+  }),
+  z.object({
+    stageId: z.literal('verifier'),
+    status: z.enum(['completed', 'skipped']),
+    verificationStatus: z.enum(['not-run', 'passed', 'failed']),
+    detail: z.string().min(1),
+  }),
+  z.object({
+    stageId: z.literal('executor'),
+    status: z.enum(['completed', 'failed']),
+    providerId: ProviderIdSchema,
+    modelId: z.string().min(1),
+    latencyMs: CountSchema.optional(),
+    errorCode: ProviderErrorCodeSchema.optional(),
+  }),
+  z.object({
+    stageId: z.literal('response'),
+    outputChars: CountSchema,
+    providerStatus: z.enum(['completed', 'failed']),
+    costStatus: CostEstimateStatusSchema,
+    diagnosticCode: z.string().min(1).optional(),
+  }),
+]);
+
+export const PipelineStageStateSchema = z.object({
+  stageId: PipelineStageIdSchema,
+  label: z.string().min(1),
+  state: PipelineExecutionStateSchema,
+  dependsOn: z.array(PipelineStageIdSchema).default([]),
+  input: PipelineStageInputSchema.optional(),
+  output: PipelineStageOutputSchema.optional(),
+  startedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional(),
+  skippedReason: z.string().min(1).optional(),
+  error: PipelineTraceErrorSchema.optional(),
+});
+
+export const PipelineStateTransitionSchema = z.object({
+  stageId: PipelineStageIdSchema,
+  fromState: PipelineExecutionStateSchema,
+  toState: PipelineExecutionStateSchema,
+  timestamp: z.string().datetime(),
+  detail: z.string().min(1).optional(),
+});
+
+export const PipelineStateSchema = z.object({
+  version: z.literal('v1'),
+  graph: PipelineGraphSchema,
+  route: RouteTierSchema,
+  state: PipelineExecutionStateSchema,
+  currentStageId: PipelineStageIdSchema.optional(),
+  stages: z.array(PipelineStageStateSchema),
+  transitions: z.array(PipelineStateTransitionSchema).default([]),
+});
+
 export const TaskResponseSchema = z.object({
   output: z.string().min(1),
   routeDecision: RouteDecisionSchema,
@@ -239,6 +397,7 @@ export const TaskResponseSchema = z.object({
   costEstimate: CostEstimateSchema,
   cacheInfo: CacheInfoSchema.optional(),
   diagnostic: DiagnosticSchema.optional(),
+  pipeline: PipelineStateSchema,
   trace: z.array(PipelineTraceEventSchema),
 });
 
@@ -330,6 +489,14 @@ export type RouteStrategy = z.infer<typeof RouteStrategySchema>;
 export type RouteScoreFactor = z.infer<typeof RouteScoreFactorSchema>;
 export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
+export type PipelineExecutionState = z.infer<typeof PipelineExecutionStateSchema>;
+export type PipelineGraph = z.infer<typeof PipelineGraphSchema>;
+export type PipelineStageId = z.infer<typeof PipelineStageIdSchema>;
+export type PipelineStageInput = z.infer<typeof PipelineStageInputSchema>;
+export type PipelineStageOutput = z.infer<typeof PipelineStageOutputSchema>;
+export type PipelineStageState = z.infer<typeof PipelineStageStateSchema>;
+export type PipelineStateTransition = z.infer<typeof PipelineStateTransitionSchema>;
+export type PipelineState = z.infer<typeof PipelineStateSchema>;
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 export type OrchestratorRequest = z.infer<typeof OrchestratorRequestSchema>;
 export type OrchestratorEvent = z.infer<typeof OrchestratorEventSchema>;

@@ -305,8 +305,9 @@ function formatTaskResponseSummary(
   const runtimeSuffix = taskResponse.selectedProvider.runtimeId
     ? ` via ${taskResponse.selectedProvider.runtimeId}/${taskResponse.selectedProvider.deploymentMode ?? 'unknown'}`
     : '';
+  const pipelineSuffix = ` Pipeline: ${taskResponse.pipeline.graph}/${taskResponse.pipeline.state}.`;
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${diagnosticSuffix}`;
 }
 
 function formatRuntimeSummary(selectedProvider: TaskResponse['selectedProvider']): string {
@@ -366,6 +367,27 @@ function formatTaskDiagnostic(taskResponse: TaskResponse): { diagnosticSummary: 
   };
 }
 
+function formatPipelineSummary(taskResponse: TaskResponse): string {
+  const stagePath = taskResponse.pipeline.stages.map((stage) => `${stage.stageId}:${stage.state}`).join(' -> ');
+  return `${taskResponse.pipeline.graph} · route=${taskResponse.pipeline.route} · state=${taskResponse.pipeline.state}${stagePath ? ` · ${stagePath}` : ''}`;
+}
+
+function formatPipelineStageEntries(taskResponse: TaskResponse): string[] {
+  return taskResponse.pipeline.stages.map((stage) => {
+    const dependencySuffix = stage.dependsOn.length > 0 ? ` · dependsOn=${stage.dependsOn.join(',')}` : '';
+    const skippedSuffix = stage.skippedReason ? ` · skipped=${stage.skippedReason}` : '';
+    const errorSuffix = stage.error ? ` · error=${stage.error.code}:${stage.error.message}` : '';
+    return `pipeline/${stage.stageId} · ${stage.state}${dependencySuffix}${skippedSuffix}${errorSuffix}`;
+  });
+}
+
+function formatPipelineTransitionEntries(taskResponse: TaskResponse): string[] {
+  return taskResponse.pipeline.transitions.map((transition) => {
+    const detailSuffix = transition.detail ? ` · ${transition.detail}` : '';
+    return `transition/${transition.stageId} · ${transition.fromState} -> ${transition.toState}${detailSuffix}`;
+  });
+}
+
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
@@ -389,10 +411,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     selectedModel: formatSelectedModel(taskResponse.selectedProvider),
     runtimeSummary: formatRuntimeSummary(taskResponse.selectedProvider),
     selectionReason: taskResponse.selectedProvider.reason,
-    executionPathSummary:
-      taskResponse.trace.length > 0
-        ? taskResponse.trace.map((traceEvent) => `${traceEvent.stage}:${traceEvent.status}`).join(' -> ')
-        : 'No trace events returned.',
+    executionPathSummary: formatPipelineSummary(taskResponse),
     diagnosticSummary,
     diagnosticDetail,
     cacheSummary,
@@ -401,7 +420,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     latencySummary,
     costSummary,
     costDetail,
-    traceEntries,
+    traceEntries: [...formatPipelineStageEntries(taskResponse), ...formatPipelineTransitionEntries(taskResponse), ...traceEntries],
   };
 }
 

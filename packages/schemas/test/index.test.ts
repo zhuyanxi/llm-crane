@@ -176,6 +176,134 @@ describe('Orchestrator protocol schemas', () => {
             },
           },
         ],
+        pipeline: {
+          version: 'v1',
+          graph: 'simple-v1',
+          route: 'simple',
+          state: 'completed',
+          stages: [
+            {
+              stageId: 'request',
+              label: 'Request Intake',
+              state: 'completed',
+              dependsOn: [],
+              input: {
+                stageId: 'request',
+                taskChars: 12,
+                contextCount: 1,
+                constraintCount: 0,
+                qualityBar: 'balanced',
+              },
+              output: {
+                stageId: 'request',
+                accepted: true,
+              },
+              startedAt: '2026-05-05T00:00:00.000Z',
+              completedAt: '2026-05-05T00:00:00.000Z',
+            },
+            {
+              stageId: 'structurizer',
+              label: 'Structurizer',
+              state: 'completed',
+              dependsOn: ['request'],
+              input: {
+                stageId: 'structurizer',
+                taskChars: 12,
+                contextCount: 1,
+              },
+              output: {
+                stageId: 'structurizer',
+                status: 'structured',
+                taskType: 'analysis',
+                targetKind: 'file',
+                warningCount: 0,
+              },
+              startedAt: '2026-05-05T00:00:00.000Z',
+              completedAt: '2026-05-05T00:00:01.000Z',
+            },
+            {
+              stageId: 'router',
+              label: 'Router',
+              state: 'completed',
+              dependsOn: ['structurizer'],
+              input: {
+                stageId: 'router',
+                structurizerStatus: 'structured',
+                taskType: 'analysis',
+                openQuestions: 0,
+                warningCount: 0,
+              },
+              output: {
+                stageId: 'router',
+                status: 'routed',
+                route: 'simple',
+                complexityScore: 2,
+                confidence: 0.82,
+              },
+              startedAt: '2026-05-05T00:00:01.000Z',
+              completedAt: '2026-05-05T00:00:02.000Z',
+            },
+            {
+              stageId: 'executor',
+              label: 'Executor',
+              state: 'completed',
+              dependsOn: ['router'],
+              input: {
+                stageId: 'executor',
+                route: 'simple',
+                providerId: 'openai',
+                modelId: 'gpt-4o-mini',
+                runtimeId: 'lmstudio-local',
+                deploymentMode: 'local',
+                apiFamily: 'openai-compatible',
+              },
+              output: {
+                stageId: 'executor',
+                status: 'completed',
+                providerId: 'openai',
+                modelId: 'gpt-4o-mini',
+                latencyMs: 120,
+              },
+              startedAt: '2026-05-05T00:00:02.000Z',
+              completedAt: '2026-05-05T00:00:03.000Z',
+            },
+            {
+              stageId: 'response',
+              label: 'Response Assembly',
+              state: 'completed',
+              dependsOn: ['executor'],
+              input: {
+                stageId: 'response',
+                providerStatus: 'completed',
+                costStatus: 'unknown',
+                diagnosticPresent: true,
+              },
+              output: {
+                stageId: 'response',
+                outputChars: 14,
+                providerStatus: 'completed',
+                costStatus: 'unknown',
+                diagnosticCode: 'provider.network',
+              },
+              startedAt: '2026-05-05T00:00:03.000Z',
+              completedAt: '2026-05-05T00:00:04.000Z',
+            },
+          ],
+          transitions: [
+            {
+              stageId: 'request',
+              fromState: 'pending',
+              toState: 'running',
+              timestamp: '2026-05-05T00:00:00.000Z',
+            },
+            {
+              stageId: 'request',
+              fromState: 'running',
+              toState: 'completed',
+              timestamp: '2026-05-05T00:00:00.000Z',
+            },
+          ],
+        },
       },
     });
 
@@ -188,6 +316,7 @@ describe('Orchestrator protocol schemas', () => {
     expect(parsed.response.selectedProvider.deploymentMode).toBe('local');
     expect(parsed.response.diagnostic?.runtimeId).toBe('lmstudio-local');
     expect(parsed.response.costEstimate.pricingSource).toBe('unknown');
+    expect(parsed.response.pipeline.graph).toBe('simple-v1');
   });
 
   it('parses error event envelope with diagnostic payload', () => {

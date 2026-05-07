@@ -8,6 +8,7 @@ import {
   type TaskRequest,
   type TaskResponse,
 } from '@llm-crane/schemas';
+import { buildCachedPipelineState } from './pipelineStateMachine';
 import { runTaskPipeline } from './pipelineRunner';
 import { createTaskCacheKey, toPersistedTaskResponse, type CachedTaskRecord, type TaskCacheStore } from './taskCache';
 
@@ -175,6 +176,14 @@ function buildCachedTaskResponse(
   return TaskResponseSchema.parse({
     ...cachedRecord.response,
     cacheInfo: buildCacheInfo('hit', cachedRecord.key, 'Cache hit; reused prior task response from SQLite store.', cachedRecord.storedAt),
+    pipeline: buildCachedPipelineState(
+      taskRequest,
+      {
+        ...cachedRecord.response,
+        diagnostic: undefined,
+      },
+      createTimestamp,
+    ),
     trace: buildHitTrace(createTimestamp, taskRequest, cachedRecord),
   });
 }

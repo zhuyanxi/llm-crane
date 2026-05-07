@@ -19,6 +19,25 @@ import {
   type TaskResponse,
 } from '@llm-crane/schemas';
 import {
+  createExecutorStageInput,
+  createExecutorStageOutput,
+  createPipelineStateMachine,
+  createPlannerStageInput,
+  createPlannerStageOutput,
+  createReasonerStageInput,
+  createReasonerStageOutput,
+  createRequestStageInput,
+  createRequestStageOutput,
+  createResponseStageInput,
+  createResponseStageOutput,
+  createRouterStageInput,
+  createRouterStageOutput,
+  createStructurizerStageInput,
+  createStructurizerStageOutput,
+  createVerifierStageInput,
+  createVerifierStageOutput,
+} from './pipelineStateMachine';
+import {
   EXECUTOR_SYSTEM_PROMPT,
   buildProviderUserPrompt,
   createFailedProviderExecutionResult,
@@ -131,6 +150,69 @@ function buildCostDetail(costEstimate: { totalCostUsd?: number; detail: string }
   return `${costEstimate.detail} totalUsd=${costEstimate.totalCostUsd}`;
 }
 
+function createStructurizerStageError(structurizerResult: StructurizerResult): PipelineTraceError | undefined {
+  return structurizerResult.fallbackReason
+    ? {
+        code: 'structurizer_fallback',
+        message: structurizerResult.fallbackReason,
+      }
+    : undefined;
+}
+
+function createRouterStageError(routeDecision: RouteDecision): PipelineTraceError | undefined {
+  return routeDecision.fallbackReason
+    ? {
+        code: 'router_fallback',
+        message: routeDecision.fallbackReason,
+      }
+    : undefined;
+}
+
+function annotateComplexGraphSkips(
+  trace: ReturnType<typeof createTraceCollector>,
+  pipelineMachine: ReturnType<typeof createPipelineStateMachine>,
+  taskRequest: TaskRequest,
+  structurizerResult: StructurizerResult,
+  routeDecision: RouteDecision,
+): void {
+  if (routeDecision.route !== 'complex') {
+    return;
+  }
+
+  const plannerDetail = 'Planner stage reserved for V1-S02; complex graph records skipped stage and continues to executor.';
+  pipelineMachine.skipStage('planner', plannerDetail, createPlannerStageOutput('skipped', plannerDetail), {
+    input: createPlannerStageInput(routeDecision, structurizerResult),
+  });
+  trace.add('planner.finish', 'skipped', plannerDetail, {
+    metadata: compactMetadata({
+      route: routeDecision.route,
+      taskType: structurizerResult.structuredTask.taskType,
+    }),
+  });
+
+  const reasonerDetail = 'Reasoner stage reserved for V1-S03; state machine records early exit for V1-S01.';
+  pipelineMachine.skipStage('reasoner', reasonerDetail, createReasonerStageOutput('skipped', reasonerDetail, false), {
+    input: createReasonerStageInput(taskRequest, routeDecision, false),
+  });
+  trace.add('reasoner.finish', 'skipped', reasonerDetail, {
+    metadata: compactMetadata({
+      route: routeDecision.route,
+      plannerAvailable: false,
+    }),
+  });
+
+  const verifierDetail = 'Verifier stage not enabled in V1-S01; state machine keeps graph terminal and serializable.';
+  pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail), {
+    input: createVerifierStageInput(routeDecision, true),
+  });
+  trace.add('verifier.finish', 'skipped', verifierDetail, {
+    metadata: compactMetadata({
+      route: routeDecision.route,
+      providerReady: true,
+    }),
+  });
+}
+
 export async function runTaskPipeline(
   config: RuntimeConfig,
   providerRegistry: ProviderRegistry,
@@ -142,6 +224,7 @@ export async function runTaskPipeline(
     ...overrides,
   };
   const trace = createTraceCollector(dependencies.createTimestamp);
+  const pipelineMachine = createPipelineStateMachine(taskRequest, dependencies.createTimestamp);
 
   trace.add('pipeline.start', 'running', 'Task pipeline started.', {
     metadata: compactMetadata({
@@ -150,6 +233,8 @@ export async function runTaskPipeline(
       constraintCount: taskRequest.constraints.length,
     }),
   });
+  pipelineMachine.startStage('request', createRequestStageInput(taskRequest));
+  pipelineMachine.completeStage('request', createRequestStageOutput());
   trace.add('request.received', 'completed', 'Task request accepted by orchestrator.', {
     metadata: compactMetadata({
       qualityBar: taskRequest.qualityBar,
@@ -163,6 +248,7 @@ export async function runTaskPipeline(
       contextCount: taskRequest.contexts.length,
     }),
   });
+  pipelineMachine.startStage('structurizer', createStructurizerStageInput(taskRequest));
 
   let structurizerResult: StructurizerResult;
   try {
@@ -179,6 +265,12 @@ export async function runTaskPipeline(
       },
     );
     structurizerResult = dependencies.structurizeTaskRequest(taskRequest);
+    pipelineMachine.updateContext({
+      structurizerResult,
+    });
+    pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
+      error: createStructurizerStageError(structurizerResult),
+    });
     trace.add(
       'structurizer.finish',
       structurizerResult.status === 'structured' ? 'completed' : 'failed',
@@ -200,6 +292,16 @@ export async function runTaskPipeline(
   } catch (error) {
     const reason = `Structurizer stage crashed: ${toErrorMessage(error)}`;
     structurizerResult = createFallbackStructurizerResult(taskRequest, reason);
+    pipelineMachine.updateContext({
+      structurizerResult,
+    });
+    pipelineMachine.completeStage('structurizer', createStructurizerStageOutput(structurizerResult), {
+      detail: reason,
+      error: {
+        code: 'structurizer_crash',
+        message: reason,
+      },
+    });
     trace.add('structurizer.finish', 'failed', reason, {
       error: {
         code: 'structurizer_crash',
@@ -214,6 +316,7 @@ export async function runTaskPipeline(
       warningCount: structurizerResult.warnings.length,
     }),
   });
+  pipelineMachine.startStage('router', createRouterStageInput(structurizerResult));
 
   let routeDecision: RouteDecision;
   try {
@@ -224,6 +327,13 @@ export async function runTaskPipeline(
       }),
     });
     routeDecision = dependencies.routeTask(structurizerResult);
+    pipelineMachine.updateContext({
+      routeDecision,
+    });
+    pipelineMachine.setGraph(routeDecision.route);
+    pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
+      error: createRouterStageError(routeDecision),
+    });
     trace.add(
       'router.finish',
       routeDecision.status === 'routed' ? 'completed' : 'failed',
@@ -246,6 +356,17 @@ export async function runTaskPipeline(
   } catch (error) {
     const reason = `Router stage crashed: ${toErrorMessage(error)}`;
     routeDecision = createSafeFallbackRouteDecision(reason);
+    pipelineMachine.updateContext({
+      routeDecision,
+    });
+    pipelineMachine.setGraph(routeDecision.route);
+    pipelineMachine.completeStage('router', createRouterStageOutput(routeDecision), {
+      detail: reason,
+      error: {
+        code: 'router_crash',
+        message: reason,
+      },
+    });
     trace.add('router.finish', 'failed', reason, {
       error: {
         code: 'router_crash',
@@ -254,9 +375,15 @@ export async function runTaskPipeline(
     });
   }
 
+  annotateComplexGraphSkips(trace, pipelineMachine, taskRequest, structurizerResult, routeDecision);
+
   const modelId = getModelIdForRoute(config, routeDecision);
   const providerTarget = resolveProviderTarget(providerRegistry, modelId);
   const providerId = providerTarget.providerId;
+  pipelineMachine.updateContext({
+    providerTarget,
+  });
+  pipelineMachine.startStage('executor', createExecutorStageInput(routeDecision, providerTarget));
   trace.add('executor.start', 'running', 'Executor stage started.', {
     metadata: compactMetadata({
       providerId,
@@ -293,6 +420,21 @@ export async function runTaskPipeline(
       structurizerResult,
       routeDecision,
     );
+    pipelineMachine.updateContext({
+      providerResult,
+    });
+    if (providerResult.status === 'completed') {
+      pipelineMachine.completeStage('executor', createExecutorStageOutput(providerResult));
+    } else {
+      pipelineMachine.failStage(
+        'executor',
+        {
+          code: providerResult.error?.code ?? 'unknown',
+          message: providerResult.error?.message ?? 'Provider invocation failed.',
+        },
+        createExecutorStageOutput(providerResult),
+      );
+    }
 
     trace.add(
       'executor.invoke',
@@ -346,6 +488,21 @@ export async function runTaskPipeline(
       message: 'LLM Crane failed before provider call completed.',
       stage: 'executor.prompt',
     });
+    pipelineMachine.updateContext({
+      providerResult,
+      diagnostic,
+    });
+    pipelineMachine.failStage(
+      'executor',
+      {
+        code: 'executor_prompt_crash',
+        message: reason,
+      },
+      createExecutorStageOutput(providerResult),
+      {
+        detail: reason,
+      },
+    );
     trace.add('executor.prompt', 'failed', reason, {
       error: {
         code: 'executor_prompt_crash',
@@ -363,6 +520,7 @@ export async function runTaskPipeline(
     });
   }
 
+  const output = buildTaskOutput(providerResult);
   const costEstimate = CostEstimateSchema.parse(
     estimateModelCost({
       modelId,
@@ -383,6 +541,13 @@ export async function runTaskPipeline(
         apiFamily: providerTarget.apiFamily,
       })
     : undefined);
+  pipelineMachine.updateContext({
+    providerResult,
+    costEstimate,
+    diagnostic,
+    output,
+  });
+  pipelineMachine.startStage('response', createResponseStageInput(providerResult, costEstimate, diagnostic));
 
   trace.add('response.cost', 'completed', buildCostDetail(costEstimate), {
     metadata: compactMetadata({
@@ -400,7 +565,7 @@ export async function runTaskPipeline(
 
   trace.add('response.output', 'completed', 'Task response prepared for extension.', {
     metadata: compactMetadata({
-      outputChars: buildTaskOutput(providerResult).length,
+      outputChars: output.length,
       traceCount: trace.list().length + 2,
       providerStatus: providerResult.status,
       costStatus: costEstimate.status,
@@ -412,6 +577,7 @@ export async function runTaskPipeline(
         }
       : undefined,
   });
+  pipelineMachine.completeStage('response', createResponseStageOutput(output, providerResult, costEstimate, diagnostic));
 
   trace.add(
     'pipeline.finish',
@@ -432,7 +598,7 @@ export async function runTaskPipeline(
   );
 
   return TaskResponseSchema.parse({
-    output: buildTaskOutput(providerResult),
+    output,
     routeDecision,
     selectedProvider: {
       providerId: providerResult.providerId,
@@ -446,6 +612,7 @@ export async function runTaskPipeline(
     providerResult,
     costEstimate,
     diagnostic,
+    pipeline: pipelineMachine.serialize(),
     trace: trace.list(),
   });
 }
