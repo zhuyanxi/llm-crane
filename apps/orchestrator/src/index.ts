@@ -6,7 +6,7 @@ import {
   loadRuntimeConfig,
 } from '@llm-crane/core';
 import { createProviderRegistry, type ProviderRegistry } from '@llm-crane/providers';
-import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
+import { buildStructurizerSystemPrompt } from '@llm-crane/prompts';
 import {
   OrchestratorEventSchema,
   OrchestratorRequestSchema,
@@ -156,7 +156,7 @@ export function startOrchestrator(): void {
 
     logOrchestrator('orchestrator ready');
     logOrchestrator(`simple=${config.defaultSimpleModel} complex=${config.defaultComplexModel}`);
-    logOrchestrator(`structurizer prompt chars=${STRUCTURIZER_SYSTEM_PROMPT.length}`);
+    logOrchestrator(`structurizer prompt chars=${buildStructurizerSystemPrompt().length}`);
     logOrchestrator(`sqlite cache=${cachePath}`);
 
     attachStdioProtocol(config, providerRegistry, taskCache);

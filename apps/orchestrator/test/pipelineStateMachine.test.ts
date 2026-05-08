@@ -30,6 +30,7 @@ const baseTaskRequest: TaskRequest = {
 
 const structuredTaskResult: StructurizerResult = {
   status: 'structured',
+  confidence: 0.92,
   structuredTask: {
     originalTask: baseTaskRequest.task,
     taskType: 'analysis',
@@ -41,6 +42,7 @@ const structuredTaskResult: StructurizerResult = {
     },
     qualityBar: 'balanced',
     constraints: [],
+    expectedOutput: ['Return bounded plain-text answer with explicit assumptions and next validation step when needed.'],
     openQuestions: [],
     uncertaintyReasons: [],
     contextSummary: [],

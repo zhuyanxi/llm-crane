@@ -1,6 +1,6 @@
 import { createDiagnosticFromError, createProviderDiagnostic } from '@llm-crane/core';
 import { estimateModelCost, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
-import { PLANNER_SYSTEM_PROMPT, STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
+import { PLANNER_SYSTEM_PROMPT, buildExecutorSystemPrompt, buildStructurizerSystemPrompt } from '@llm-crane/prompts';
 import {
   CostEstimateSchema,
   TaskResponseSchema,
@@ -44,7 +44,6 @@ import {
   createVerifierStageOutput,
 } from './pipelineStateMachine';
 import {
-  EXECUTOR_SYSTEM_PROMPT,
   buildProviderUserPrompt,
   createFailedProviderExecutionResult,
   invokeRoutedProvider,
@@ -385,14 +384,15 @@ export async function runTaskPipeline(
 
     try {
       const structurizerPrompt = dependencies.buildStructurizerPrompt(taskRequest);
+      const structurizerSystemPrompt = buildStructurizerSystemPrompt(taskRequest.taskTemplate?.templateId);
       trace.add(
         'structurizer.prompt',
         'completed',
-        `promptChars=${structurizerPrompt.length}; systemPromptChars=${STRUCTURIZER_SYSTEM_PROMPT.length}`,
+        `promptChars=${structurizerPrompt.length}; systemPromptChars=${structurizerSystemPrompt.length}`,
         {
           metadata: compactMetadata({
             promptChars: structurizerPrompt.length,
-            systemPromptChars: STRUCTURIZER_SYSTEM_PROMPT.length,
+            systemPromptChars: structurizerSystemPrompt.length,
           }),
         },
       );
@@ -844,13 +844,14 @@ export async function runTaskPipeline(
 
   try {
     providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult);
+    const executorSystemPrompt = buildExecutorSystemPrompt(structurizerResult.structuredTask.template?.templateId);
     trace.add(
       'executor.prompt',
       'completed',
-      `systemChars=${EXECUTOR_SYSTEM_PROMPT.length}; userChars=${providerPrompt.length}`,
+      `systemChars=${executorSystemPrompt.length}; userChars=${providerPrompt.length}`,
       {
         metadata: compactMetadata({
-          systemChars: EXECUTOR_SYSTEM_PROMPT.length,
+          systemChars: executorSystemPrompt.length,
           userChars: providerPrompt.length,
         }),
       },

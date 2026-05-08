@@ -23,6 +23,7 @@ const baseTaskRequest: TaskRequest = {
 
 const baseStructurizerResult: StructurizerResult = {
   status: 'structured',
+  confidence: 0.74,
   structuredTask: {
     originalTask: baseTaskRequest.task,
     taskType: 'analysis',
@@ -34,6 +35,7 @@ const baseStructurizerResult: StructurizerResult = {
     },
     qualityBar: 'high',
     constraints: baseTaskRequest.constraints,
+    expectedOutput: ['Rank top risks, tradeoffs, and minimal remediation path for requested scope.'],
     openQuestions: ['Which module owns the retry policy?'],
     uncertaintyReasons: ['Cross-file ownership is unclear from the current snapshot.'],
     contextSummary: ['workspace / /workspace', 'file / typescript / /workspace/src/server.ts'],
@@ -120,6 +122,7 @@ describe('buildReasonerInput', () => {
       },
       {
         status: 'structured',
+        confidence: 0.9,
         structuredTask: {
           originalTask: 'Refactor current selection to reduce duplication without changing public API.',
           taskType: 'refactor',
@@ -130,6 +133,7 @@ describe('buildReasonerInput', () => {
           },
           qualityBar: 'fast',
           constraints: ['Keep public API stable'],
+          expectedOutput: ['Return bounded refactor guidance or code-change summary tied to explicit constraints.'],
           openQuestions: [],
           uncertaintyReasons: [],
           contextSummary: ['selection / typescript / /workspace/src/auth.ts'],

@@ -364,6 +364,7 @@ export const StructuredTaskSchema = z.object({
   template: StructuredTaskTemplateSchema.optional(),
   qualityBar: QualityBarSchema,
   constraints: z.array(z.string()).default([]),
+  expectedOutput: z.array(z.string().min(1)).default([]),
   openQuestions: z.array(z.string()).default([]),
   uncertaintyReasons: z.array(z.string()).default([]),
   contextSummary: z.array(z.string()).default([]),
@@ -371,6 +372,7 @@ export const StructuredTaskSchema = z.object({
 
 export const StructurizerResultSchema = z.object({
   status: z.enum(['structured', 'fallback']),
+  confidence: z.number().min(0).max(1).optional(),
   structuredTask: StructuredTaskSchema,
   fallbackReason: z.string().min(1).optional(),
   warnings: z.array(z.string()).default([]),
@@ -502,6 +504,9 @@ export const PipelineStageInputSchema = z.discriminatedUnion('stageId', [
     stageId: z.literal('structurizer'),
     taskChars: CountSchema,
     contextCount: CountSchema,
+    templateId: z.string().min(1).optional(),
+    primaryContextSource: ContextSourceSchema.optional(),
+    supportingContextCount: CountSchema.optional(),
   }),
   z.object({
     stageId: z.literal('router'),
@@ -567,6 +572,8 @@ export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
     taskType: StructuredTaskTypeSchema,
     targetKind: StructuredTaskTargetKindSchema,
     warningCount: CountSchema,
+    expectedOutputCount: CountSchema.optional(),
+    confidence: z.number().min(0).max(1).optional(),
     fallbackReason: z.string().min(1).optional(),
   }),
   z.object({

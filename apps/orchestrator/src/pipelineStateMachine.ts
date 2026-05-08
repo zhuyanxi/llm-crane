@@ -329,10 +329,15 @@ export function createRequestStageOutput(): PipelineStageOutput {
 }
 
 export function createStructurizerStageInput(taskRequest: TaskRequest): PipelineStageInput {
+  const primaryContext = taskRequest.contexts.find((context) => (context.priority ?? 'primary') === 'primary');
+
   return {
     stageId: 'structurizer',
     taskChars: taskRequest.task.length,
     contextCount: taskRequest.contexts.length,
+    templateId: taskRequest.taskTemplate?.templateId,
+    primaryContextSource: primaryContext?.source,
+    supportingContextCount: taskRequest.contexts.filter((context) => (context.priority ?? 'primary') === 'supporting').length,
   };
 }
 
@@ -343,6 +348,8 @@ export function createStructurizerStageOutput(structurizerResult: StructurizerRe
     taskType: structurizerResult.structuredTask.taskType,
     targetKind: structurizerResult.structuredTask.target.kind,
     warningCount: structurizerResult.warnings.length,
+    expectedOutputCount: structurizerResult.structuredTask.expectedOutput.length,
+    confidence: structurizerResult.confidence,
     fallbackReason: structurizerResult.fallbackReason,
   };
 }
@@ -562,10 +569,12 @@ function createCacheFallbackStructurizerResult(taskRequest: TaskRequest): Struct
       },
       qualityBar: taskRequest.qualityBar,
       constraints: taskRequest.constraints,
+      expectedOutput: [],
       openQuestions: [],
       uncertaintyReasons: [],
       contextSummary: [],
     },
+    confidence: 0.05,
     warnings: [],
     fallbackReason: 'Cache hit omitted prior structurizer payload.',
   };

@@ -14,6 +14,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Run task from VS Code Command Palette with freeform, refactor, debug, or architecture-analysis templates plus template-default, selection-first, file-first, or manual-only context strategies.
 - Preview template-aware context capture before sending, including selection-first, current-file-first, and manual-only strategies.
 - Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
+- Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
 - Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline.
@@ -161,7 +162,7 @@ Hosted provider keys:
 - `packages/core`: runtime config, diagnostic helpers, shared errors
 - `packages/schemas`: shared Zod schemas and TypeScript contracts
 - `packages/providers`: generic provider contracts, registry, HTTP adapters, pricing
-- `packages/prompts`: prompt assets for early pipeline stages
+- `packages/prompts`: versioned prompt assets for Structurizer and Executor template guidance
 
 ### Common commands
 
@@ -199,6 +200,8 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Complex path runs Planner before Executor, conditionally enters Reasoner when router or planner signals extra synthesis, and falls back conservatively if planner or reasoner output is invalid
 - Task panel supports optional template metadata for refactor, debug, and architecture-analysis requests; validated template selection is carried inside `taskTemplate`
 - Built-in templates now carry context strategy metadata, and attached contexts can include `priority`, `truncated`, and `originalLength` for preview and downstream prompts
+- Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
+- Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, and marks current response as `full` or `stage-rerun`
 - Pipeline returns unified `taskResult` payload even when executor stage fails

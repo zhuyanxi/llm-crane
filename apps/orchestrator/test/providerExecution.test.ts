@@ -21,6 +21,7 @@ const baseTaskRequest: TaskRequest = {
 
 const baseStructurizerResult: StructurizerResult = {
   status: 'structured',
+  confidence: 0.87,
   structuredTask: {
     originalTask: baseTaskRequest.task,
     taskType: 'analysis',
@@ -30,8 +31,19 @@ const baseStructurizerResult: StructurizerResult = {
       value: '/workspace/src/app.ts',
       uri: '/workspace/src/app.ts',
     },
+    template: {
+      templateId: 'architecture-analysis',
+      label: 'Architecture Analysis',
+      taskType: 'analysis',
+      defaultConstraints: [],
+      values: {
+        scope: 'current file',
+        focus: 'bug risk',
+      },
+    },
     qualityBar: 'balanced',
     constraints: ['Keep public API stable'],
+    expectedOutput: ['Rank top risks and propose bounded remediation path.'],
     openQuestions: [],
     uncertaintyReasons: [],
     contextSummary: ['file / typescript / /workspace/src/app.ts'],
@@ -123,6 +135,8 @@ describe('buildProviderUserPrompt', () => {
     expect(prompt).toContain('Escalate reasoning for analysis');
     expect(prompt).toContain('/workspace/src/app.ts');
     expect(prompt).toContain('priority=primary');
+    expect(prompt).toContain('Expected output:');
+    expect(prompt).toContain('Rank top risks');
   });
 });
 
@@ -155,6 +169,7 @@ describe('invokeRoutedProvider', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith(
       expect.objectContaining({
+        systemPrompt: expect.stringContaining('rank risks before recommending change'),
         metadata: expect.objectContaining({
           plannerStatus: 'planned',
           reasonerStatus: 'reasoned',

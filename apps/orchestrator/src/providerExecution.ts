@@ -1,3 +1,4 @@
+import { buildExecutorSystemPrompt } from '@llm-crane/prompts';
 import { getProviderIdForModel, ProviderInvocationError, type ProviderId, type ProviderInvocationRequest } from '@llm-crane/providers';
 import {
   ProviderExecutionResultSchema,
@@ -29,13 +30,7 @@ type ProviderInvoker = {
 const SIMPLE_MAX_OUTPUT_TOKENS = 1200;
 const COMPLEX_MAX_OUTPUT_TOKENS = 2400;
 
-export const EXECUTOR_SYSTEM_PROMPT = [
-  'You are LLM Crane executor.',
-  'Complete user task using structured task object, route decision, and attached contexts.',
-  'Respect explicit constraints.',
-  'If information is missing, say what is missing instead of inventing facts.',
-  'Return plain text only.',
-].join(' ');
+export const EXECUTOR_SYSTEM_PROMPT = buildExecutorSystemPrompt();
 
 function formatContext(context: TaskContext, index: number): string {
   const headerParts = [`Context ${index + 1}`, `source=${context.source}`, `priority=${context.priority}`];
@@ -62,6 +57,7 @@ export function buildProviderUserPrompt(
   return [
     `Original task:\n${taskRequest.task}`,
     `Structured task:\n${JSON.stringify(structurizerResult.structuredTask, null, 2)}`,
+    `Expected output:\n${structurizerResult.structuredTask.expectedOutput.length > 0 ? structurizerResult.structuredTask.expectedOutput.join('\n') : 'No explicit output preference.'}`,
     `Route decision:\n${JSON.stringify(routeDecision, null, 2)}`,
     plannerResult ? `Planner result:\n${JSON.stringify(plannerResult, null, 2)}` : undefined,
     reasonerResult ? `Reasoner result:\n${JSON.stringify(reasonerResult, null, 2)}` : undefined,
@@ -121,10 +117,11 @@ export async function invokeRoutedProvider(
   reasonerResult?: ReasonerResult,
 ): Promise<ProviderExecutionResult> {
   try {
+    const executorSystemPrompt = buildExecutorSystemPrompt(structurizerResult.structuredTask.template?.templateId);
     const result = await providerInvoker.invoke({
       modelId,
       prompt: buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult),
-      systemPrompt: EXECUTOR_SYSTEM_PROMPT,
+      systemPrompt: executorSystemPrompt,
       temperature: routeDecision.route === 'simple' ? 0.1 : 0.2,
       maxOutputTokens: getMaxOutputTokens(routeDecision),
       timeoutMs: routeDecision.route === 'simple' ? 20_000 : 35_000,

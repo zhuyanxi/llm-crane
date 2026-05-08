@@ -108,6 +108,43 @@ describe('structurizeTaskRequest', () => {
     expect(result.structuredTask.template?.templateId).toBe('refactor');
     expect(result.structuredTask.template?.values.goal).toBe('reduce duplication');
     expect(result.structuredTask.constraints).toContain('Keep public API stable unless change is explicitly requested.');
+    expect(result.structuredTask.expectedOutput[0]).toContain('safest refactor slice');
+    expect(result.confidence).toBeGreaterThan(0.7);
+  });
+
+  it('prefers primary file context over supporting selection when template strategy is file-first', () => {
+    const result = structurizeTaskRequest(
+      makeTaskRequest('Debug task\nTarget code: src/auth.ts\nObserved symptom: token expires immediately', {
+        taskTemplate: {
+          templateId: 'debug',
+          values: {
+            target: 'src/auth.ts',
+            symptom: 'token expires immediately',
+          },
+        },
+        contexts: [
+          {
+            source: 'file',
+            priority: 'primary',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'export async function login() { return refreshToken(); }',
+            truncated: false,
+          },
+          {
+            source: 'selection',
+            priority: 'supporting',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'return refreshToken();',
+            truncated: false,
+          },
+        ],
+      }),
+    );
+
+    expect(result.status).toBe('structured');
+    expect(result.structuredTask.target.kind).toBe('file');
   });
 });
 
@@ -139,6 +176,7 @@ describe('parseStructurizerOutput', () => {
           },
           qualityBar: 'balanced',
           constraints: [],
+          expectedOutput: [],
           openQuestions: [],
           uncertaintyReasons: [],
           contextSummary: ['file / typescript / /workspace/src/app.ts'],
