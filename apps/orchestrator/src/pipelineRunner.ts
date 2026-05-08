@@ -211,6 +211,41 @@ function getModelIdForRoute(config: RuntimeConfig, routeDecision: RouteDecision)
   return routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
 }
 
+function resolveModelSelection(config: RuntimeConfig, taskRequest: TaskRequest, routeDecision: RouteDecision): {
+  modelId: string;
+  overrideMode?: 'simple-default' | 'complex-default' | 'specific';
+  reason: string;
+} {
+  const override = taskRequest.policyOverrides?.modelOverride;
+  if (!override) {
+    return {
+      modelId: getModelIdForRoute(config, routeDecision),
+      reason: routeDecision.reason,
+    };
+  }
+
+  switch (override.mode) {
+    case 'simple-default':
+      return {
+        modelId: config.defaultSimpleModel,
+        overrideMode: override.mode,
+        reason: `Manual override pinned execution to simple default model ${config.defaultSimpleModel} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
+      };
+    case 'complex-default':
+      return {
+        modelId: config.defaultComplexModel,
+        overrideMode: override.mode,
+        reason: `Manual override pinned execution to complex default model ${config.defaultComplexModel} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
+      };
+    case 'specific':
+      return {
+        modelId: override.modelId,
+        overrideMode: override.mode,
+        reason: `Manual override pinned execution to specific model ${override.modelId} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
+      };
+  }
+}
+
 function resolveProviderTarget(providerRegistry: ProviderRegistry, modelId: string): ResolvedProviderTarget {
   const descriptor = providerRegistry.describeModel?.(modelId);
   if (descriptor) {
@@ -820,12 +855,24 @@ export async function runTaskPipeline(
     }
   }
 
-  const modelId = getModelIdForRoute(config, routeDecision);
+  const modelSelection = resolveModelSelection(config, taskRequest, routeDecision);
+  const modelId = modelSelection.modelId;
   const providerTarget = resolveProviderTarget(providerRegistry, modelId);
   const providerId = providerTarget.providerId;
   pipelineMachine.updateContext({
     providerTarget,
   });
+  if (modelSelection.overrideMode) {
+    trace.add('policy.override', 'completed', `mode=${modelSelection.overrideMode}; model=${modelId}; route=${routeDecision.route}`, {
+      metadata: compactMetadata({
+        mode: modelSelection.overrideMode,
+        modelId,
+        providerId,
+        route: routeDecision.route,
+        routeDefaultModel: getModelIdForRoute(config, routeDecision),
+      }),
+    });
+  }
   pipelineMachine.startStage('executor', createExecutorStageInput(routeDecision, providerTarget));
   trace.add('executor.start', 'running', 'Executor stage started.', {
     metadata: compactMetadata({
@@ -1078,7 +1125,7 @@ export async function runTaskPipeline(
       deploymentMode: providerTarget.deploymentMode,
       apiFamily: providerTarget.apiFamily,
       modelId,
-      reason: routeDecision.reason,
+      reason: modelSelection.reason,
       confidence: routeDecision.confidence,
     },
     providerResult,

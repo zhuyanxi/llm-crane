@@ -1,4 +1,5 @@
-import type { PipelineStageState, TaskResponse } from '@llm-crane/schemas';
+import type { TaskResponse } from '@llm-crane/schemas';
+import { describeTaskModelOverride } from './modelOverride';
 
 export type RoutingInsightView = {
   routeSummary: string;
@@ -11,7 +12,7 @@ export type RoutingInsightView = {
 };
 
 export function buildRoutingInsight(
-  taskResponse: Pick<TaskResponse, 'routeDecision' | 'checkpoint' | 'reasonerResult' | 'pipeline'>,
+  taskResponse: Pick<TaskResponse, 'routeDecision' | 'checkpoint' | 'reasonerResult' | 'pipeline' | 'selectedProvider'>,
 ): RoutingInsightView {
   const confidencePercent = Math.round(taskResponse.routeDecision.confidence * 100);
   const routeSummary = `${taskResponse.routeDecision.route} route · ${taskResponse.routeDecision.status}`;
@@ -20,11 +21,10 @@ export function buildRoutingInsight(
     routeDetailParts.push(`strategy=${taskResponse.routeDecision.strategy}`);
   }
 
-  const overrideKeys = Object.keys(taskResponse.checkpoint.taskRequest.policyOverrides ?? {});
-  const overrideSummary = overrideKeys.length > 0 ? 'Manual override' : 'Automatic routing';
-  const overrideDetail = overrideKeys.length > 0
-    ? `policyOverrides=${overrideKeys.join(', ')}`
-    : 'Model and route came from automatic router decision.';
+  const overrideInsight = describeTaskModelOverride(
+    taskResponse.checkpoint.taskRequest.policyOverrides,
+    taskResponse.selectedProvider.modelId,
+  );
 
   const reasonParts = [taskResponse.routeDecision.reason];
   if (taskResponse.routeDecision.fallbackReason) {
@@ -37,8 +37,8 @@ export function buildRoutingInsight(
     routeSummary,
     routeDetail: routeDetailParts.join(' · '),
     routeReason: reasonParts.join(' · '),
-    overrideSummary,
-    overrideDetail,
+    overrideSummary: overrideInsight.summary,
+    overrideDetail: overrideInsight.detail,
     earlyExitSummary,
     earlyExitDetail,
   };

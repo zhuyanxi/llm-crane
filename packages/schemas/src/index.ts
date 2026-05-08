@@ -210,6 +210,23 @@ export const TaskTemplateInputSchema = z.object({
   values: z.record(z.string(), z.string()).default({}),
 });
 
+export const TaskModelOverrideSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('simple-default'),
+  }),
+  z.object({
+    mode: z.literal('complex-default'),
+  }),
+  z.object({
+    mode: z.literal('specific'),
+    modelId: z.string().min(1),
+  }),
+]);
+
+export const TaskPolicyOverridesSchema = z.object({
+  modelOverride: TaskModelOverrideSchema.optional(),
+});
+
 export const StructuredTaskTemplateSchema = z.object({
   templateId: z.string().min(1),
   label: z.string().min(1),
@@ -470,7 +487,7 @@ export const TaskRequestSchema = z.object({
   cacheMode: CacheModeSchema.default('default'),
   contexts: z.array(TaskContextSchema).default([]),
   constraints: z.array(z.string()).default([]),
-  policyOverrides: z.record(z.string(), z.unknown()).optional(),
+  policyOverrides: TaskPolicyOverridesSchema.optional(),
 });
 
 export const PipelineExecutionStateSchema = z.enum(['pending', 'running', 'completed', 'failed', 'skipped']);
@@ -795,6 +812,8 @@ export type TaskTemplateContextStrategy = z.infer<typeof TaskTemplateContextStra
 export type TaskTemplateField = z.infer<typeof TaskTemplateFieldSchema>;
 export type TaskTemplateDefinition = z.infer<typeof TaskTemplateDefinitionSchema>;
 export type TaskTemplateInput = z.infer<typeof TaskTemplateInputSchema>;
+export type TaskModelOverride = z.infer<typeof TaskModelOverrideSchema>;
+export type TaskPolicyOverrides = z.infer<typeof TaskPolicyOverridesSchema>;
 export type StructuredTaskTemplate = z.infer<typeof StructuredTaskTemplateSchema>;
 export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;
 export type StructuredTaskTarget = z.infer<typeof StructuredTaskTargetSchema>;

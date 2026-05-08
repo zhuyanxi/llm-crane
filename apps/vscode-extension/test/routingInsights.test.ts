@@ -56,11 +56,17 @@ describe('buildRoutingInsight', () => {
         trace: [],
         capturedAt: '2026-05-08T10:00:00.000Z',
       },
-    } satisfies Pick<TaskResponse, 'routeDecision' | 'reasonerResult' | 'pipeline' | 'checkpoint'>);
+      selectedProvider: {
+        providerId: 'openai',
+        modelId: 'gpt-4o-mini',
+        reason: 'Small bounded bug fix stays on cheap path.',
+      },
+    } satisfies Pick<TaskResponse, 'routeDecision' | 'reasonerResult' | 'pipeline' | 'checkpoint' | 'selectedProvider'>);
 
     expect(insight.routeSummary).toBe('simple route · routed');
     expect(insight.routeDetail).toContain('78% confidence');
     expect(insight.overrideSummary).toBe('Automatic routing');
+    expect(insight.overrideDetail).toContain('automatic route selection');
     expect(insight.earlyExitSummary).toBe('Saved planner, reasoner, verifier');
     expect(insight.earlyExitDetail).toContain('extra reasoning would be redundant');
   });
@@ -118,7 +124,10 @@ describe('buildRoutingInsight', () => {
           contexts: [],
           constraints: [],
           policyOverrides: {
-            modelId: 'gpt-4.1',
+            modelOverride: {
+              mode: 'specific',
+              modelId: 'gpt-4.1',
+            },
           },
         },
         pipeline: {
@@ -132,10 +141,15 @@ describe('buildRoutingInsight', () => {
         trace: [],
         capturedAt: '2026-05-08T10:00:00.000Z',
       },
-    } satisfies Pick<TaskResponse, 'routeDecision' | 'reasonerResult' | 'pipeline' | 'checkpoint'>);
+      selectedProvider: {
+        providerId: 'openai',
+        modelId: 'gpt-4.1',
+        reason: 'Manual override selected model gpt-4.1. Open questions keep task on conservative path.',
+      },
+    } satisfies Pick<TaskResponse, 'routeDecision' | 'reasonerResult' | 'pipeline' | 'checkpoint' | 'selectedProvider'>);
 
     expect(insight.overrideSummary).toBe('Manual override');
-    expect(insight.overrideDetail).toContain('modelId');
+    expect(insight.overrideDetail).toContain('specific model gpt-4.1');
     expect(insight.routeReason).toContain('Fallback: Router output invalid');
     expect(insight.earlyExitSummary).toBe('Saved reasoner and verifier');
   });

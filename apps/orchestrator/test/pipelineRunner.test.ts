@@ -137,6 +137,116 @@ describe('runTaskPipeline', () => {
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
   });
 
+  it('honors manual complex-default override on simple route and records override trace', async () => {
+    const invokeRoutedProvider = vi.fn(async (_providerRegistry: unknown, modelId: string) => ({
+      status: 'completed' as const,
+      providerId: 'anthropic' as const,
+      modelId,
+      outputText: 'manual override result',
+      latencyMs: 180,
+    }));
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      {} as never,
+      {
+        task: 'Refactor current selection to reduce duplication without changing public API.',
+        qualityBar: 'fast',
+        constraints: [],
+        contexts: [
+          {
+            source: 'selection',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'function loginUser() { return doLogin(); }',
+          },
+        ],
+        policyOverrides: {
+          modelOverride: {
+            mode: 'complex-default',
+          },
+        },
+      },
+      {
+        invokeRoutedProvider,
+      },
+    );
+
+    const overrideEvent = response.trace.find((event) => event.stage === 'policy.override');
+
+    expect(response.routeDecision.route).toBe('simple');
+    expect(invokeRoutedProvider.mock.calls[0]?.[1]).toBe('claude-3-5-sonnet-latest');
+    expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
+    expect(response.selectedProvider.reason).toContain('Manual override pinned execution to complex default model claude-3-5-sonnet-latest');
+    expect(overrideEvent?.status).toBe('completed');
+    expect(overrideEvent?.metadata.mode).toBe('complex-default');
+    expect(overrideEvent?.metadata.modelId).toBe('claude-3-5-sonnet-latest');
+  });
+
+  it('keeps specific manual override across executor rerun', async () => {
+    const invokeRoutedProvider = vi
+      .fn(async (_providerRegistry: unknown, modelId: string) => ({
+        status: 'completed' as const,
+        providerId: 'anthropic' as const,
+        modelId,
+        outputText: `manual rerun result ${modelId}`,
+        latencyMs: 160,
+      }));
+
+    const taskRequest: TaskRequest = {
+      task: 'Refactor current selection to reduce duplication without changing public API.',
+      qualityBar: 'fast',
+      constraints: [],
+      contexts: [
+        {
+          source: 'selection',
+          uri: '/workspace/src/auth.ts',
+          languageId: 'typescript',
+          content: 'function loginUser() { return doLogin(); }',
+        },
+      ],
+      policyOverrides: {
+        modelOverride: {
+          mode: 'specific',
+          modelId: 'claude-3-5-sonnet-latest',
+        },
+      },
+    };
+
+    const firstResponse = await runTaskPipeline(
+      runtimeConfig,
+      {} as never,
+      taskRequest,
+      {
+        invokeRoutedProvider,
+      },
+    );
+    const rerunResponse = await runTaskPipeline(
+      runtimeConfig,
+      {} as never,
+      firstResponse.checkpoint.taskRequest,
+      {
+        invokeRoutedProvider,
+      },
+      {
+        mode: 'stage-rerun',
+        rerun: {
+          targetStageId: 'executor',
+          checkpoint: firstResponse.checkpoint,
+        },
+      },
+    );
+
+    expect(firstResponse.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
+    expect(rerunResponse.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
+    expect(invokeRoutedProvider.mock.calls[0]?.[1]).toBe('claude-3-5-sonnet-latest');
+    expect(invokeRoutedProvider.mock.calls[1]?.[1]).toBe('claude-3-5-sonnet-latest');
+    expect(rerunResponse.runInfo.mode).toBe('stage-rerun');
+    expect(rerunResponse.runInfo.targetStageId).toBe('executor');
+    expect(rerunResponse.runInfo.reusedCheckpointStages).toEqual(['structurizer', 'router']);
+    expect(rerunResponse.trace.filter((event) => event.stage === 'policy.override')).toHaveLength(2);
+  });
+
   it('falls back to conservative planner output when planner stage crashes', async () => {
     const providerRegistry = {
       invoke: vi.fn().mockResolvedValue({

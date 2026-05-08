@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@llm-crane/core": "workspace:*",
+    "@llm-crane/providers": "workspace:*",
     "@llm-crane/schemas": "workspace:*"
   },
   "devDependencies": {

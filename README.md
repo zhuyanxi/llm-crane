@@ -17,9 +17,10 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
+- Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
-- Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline.
+- Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline, while keeping latest checkpointed manual override state.
 - See classified diagnostics for configuration, provider, schema, and internal failures.
 
 ### Quick start
@@ -51,7 +52,7 @@ Run inside VS Code:
 1. Build once so orchestrator output exists.
 2. Use workspace launch config `LLM Crane: Extension`.
 3. Run command `LLM Crane: Run Task`.
-4. Choose freeform or a task template, fill required template inputs, preview selected context strategy, then press `Run Task` or `Run Without Cache`.
+4. Choose freeform or a task template, fill required template inputs, preview selected context strategy, optionally pin model selection, then press `Run Task` or `Run Without Cache`.
 
 ### What result panel shows
 
@@ -59,6 +60,7 @@ Run inside VS Code:
 - Context preview before send, with source, priority, and truncation warnings for attached editor contexts
 - Validated TaskRequest preview including selected task template and template inputs when present
 - Selected provider/model
+- Request and response summaries showing automatic routing versus manual model override
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
 - Routing summary with route status, confidence, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
@@ -207,9 +209,10 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
 - Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template
 - VS Code task panel now aggregates pipeline state plus stage trace into timeline cards so users can inspect duration, summaries, and failed stage reasons without scanning raw trace only
-- VS Code task panel now surfaces router confidence, `routeReason`, and override source from checkpointed request policy overrides; full manual override controls still land in later V1 story
+- VS Code task panel now surfaces router confidence, `routeReason`, override source, and manual model override controls with configured-model validation
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
-- Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, and marks current response as `full` or `stage-rerun`
+- Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, keeps checkpointed override state, and marks current response as `full` or `stage-rerun`
+- Manual model override now records `policy.override` trace entries and updates selected-provider reasoning in result summaries
 - Pipeline returns unified `taskResult` payload even when executor stage fails
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks

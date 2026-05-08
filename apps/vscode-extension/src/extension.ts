@@ -7,6 +7,7 @@ import {
   type RerunTaskRequest,
   type RerunnableStageId,
   type TaskContext,
+  type TaskPolicyOverrides,
   type TaskRequest,
   type TaskResponse,
   type TaskTemplateDefinition,
@@ -24,6 +25,12 @@ import {
 } from './taskContextPlan';
 import { buildPipelineTimeline, type TaskTimelineStageView } from './pipelineTimeline';
 import { buildRoutingInsight } from './routingInsights';
+import {
+  buildModelPolicyOverrides,
+  describeTaskModelOverride,
+  loadModelOverrideCatalog,
+  type ModelOverrideMode,
+} from './modelOverride';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -37,6 +44,8 @@ type SubmitTaskPanelInboundMessage = {
   templateId: string;
   templateValues: Record<string, string>;
   includeSupportingContext: boolean;
+  modelOverrideMode: ModelOverrideMode;
+  overrideModelId: string;
 };
 
 type PreviewContextPanelInboundMessage = {
@@ -214,6 +223,8 @@ async function handleTaskPanelMessage(
         message.templateId,
         message.templateValues,
         message.includeSupportingContext,
+        message.modelOverrideMode,
+        message.overrideModelId,
       );
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
       const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
@@ -340,8 +351,15 @@ function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTas
     typeof candidate.templateId === 'string' &&
     isStringRecord(candidate.templateValues) &&
     typeof candidate.includeSupportingContext === 'boolean' &&
+    typeof candidate.modelOverrideMode === 'string' &&
+    typeof candidate.overrideModelId === 'string' &&
+    isModelOverrideMode(candidate.modelOverrideMode) &&
     isContextCaptureMode(candidate.contextMode)
   );
+}
+
+function isModelOverrideMode(value: string): value is ModelOverrideMode {
+  return value === 'auto' || value === 'simple-default' || value === 'complex-default' || value === 'specific';
 }
 
 function isPreviewContextPanelInboundMessage(message: unknown): message is PreviewContextPanelInboundMessage {
@@ -537,10 +555,13 @@ function buildTaskRequest(
   templateId: string,
   templateValues: Record<string, string>,
   includeSupportingContext: boolean,
+  modelOverrideMode: ModelOverrideMode,
+  overrideModelId: string,
 ): TaskRequest {
   const normalizedTask = task.trim();
   const normalizedTemplateValues = normalizeTemplateValues(templateValues);
   const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
+  const policyOverrides = buildModelPolicyOverrides(modelOverrideMode, overrideModelId, loadModelOverrideCatalog());
 
   if (templateDefinition) {
     validateTemplateInputs(templateDefinition, normalizedTemplateValues);
@@ -570,7 +591,13 @@ function buildTaskRequest(
     constraints: templateDefinition?.defaultConstraints ?? [],
     cacheMode: ignoreCache ? 'bypass' : 'default',
     contexts: plan.contexts,
+    policyOverrides,
   });
+}
+
+function formatTaskPolicyOverride(policyOverrides: TaskPolicyOverrides | undefined, selectedModelId?: string): string {
+  const override = describeTaskModelOverride(policyOverrides, selectedModelId);
+  return `${override.summary}. ${override.detail}`;
 }
 
 function getSupportedRerunTargets(taskResponse: TaskResponse): RerunnableStageId[] {
@@ -600,9 +627,10 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
   const templatePrefix = templateDefinition
     ? `Template ${templateDefinition.label}. `
     : 'Freeform task. ';
+  const overrideSummary = formatTaskPolicyOverride(taskRequest.policyOverrides);
 
   if (taskRequest.contexts.length === 0) {
-    return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Manual input only. No editor context attached.`;
+    return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Manual input only. No editor context attached.`;
   }
 
   const details = taskRequest.contexts
@@ -621,7 +649,7 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
     })
     .join('; ');
 
-  return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
+  return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
 }
 
 function formatTaskResponseSummary(
@@ -649,8 +677,15 @@ function formatTaskResponseSummary(
   const runSuffix = taskResponse.runInfo.mode === 'stage-rerun'
     ? ` Execution: stage rerun from ${taskResponse.runInfo.targetStageId}.`
     : ' Execution: full run.';
+  const overrideSummary = describeTaskModelOverride(
+    taskResponse.checkpoint.taskRequest.policyOverrides,
+    taskResponse.selectedProvider.modelId,
+  );
+  const overrideSuffix = overrideSummary.summary === 'Automatic routing'
+    ? ` Selection: ${overrideSummary.summary}.`
+    : ` Selection: ${overrideSummary.summary}. ${overrideSummary.detail}`;
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${runSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${runSuffix}${overrideSuffix}${diagnosticSuffix}`;
 }
 
 function formatRunModeSummary(taskResponse: TaskResponse): string {
@@ -922,6 +957,7 @@ function postContextPreview(webview: vscode.Webview, message: ContextPreviewMess
 
 function getTaskPanelHtml(webview: vscode.Webview): string {
   const nonce = getNonce();
+  const modelOverrideCatalog = loadModelOverrideCatalog();
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1350,13 +1386,13 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S10</p>
+        <p class="eyebrow">V1-S11</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
-          then submit from inside VS Code. Current step adds routing explanation with route reason, confidence, early-exit savings,
-          and auto-versus-manual override status while keeping timeline, context preview, diagnostics, cache, execution path,
-          trace, token usage, latency, cost estimate, and stage rerun flow.
+          then submit from inside VS Code. Current step adds manual model override controls, configured-model validation,
+          and clearer rerun guidance while keeping routing explanation, timeline, context preview, diagnostics, cache,
+          execution path, trace, token usage, latency, and cost estimate.
         </p>
       </header>
 
@@ -1386,6 +1422,30 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <input id="include-supporting-context" type="checkbox" />
           Include supporting context when available
         </label>
+
+        <div class="field-group">
+          <label for="model-override-mode">Model override</label>
+          <select id="model-override-mode"${modelOverrideCatalog.available ? '' : ' disabled'}>
+            <option value="auto" selected>Auto</option>
+            <option value="simple-default">Use simple default (${modelOverrideCatalog.defaultSimpleModel})</option>
+            <option value="complex-default">Use complex default (${modelOverrideCatalog.defaultComplexModel})</option>
+            <option value="specific">Choose specific model</option>
+          </select>
+          <span class="hint" id="model-override-hint">${modelOverrideCatalog.available
+            ? `Auto follows router. Simple default=${modelOverrideCatalog.defaultSimpleModel} · complex default=${modelOverrideCatalog.defaultComplexModel}.`
+            : `Model override unavailable. ${modelOverrideCatalog.error ?? 'Runtime configuration missing.'}`}</span>
+        </div>
+
+        <div class="field-group" id="specific-model-block" hidden>
+          <label for="specific-model">Specific model</label>
+          <select id="specific-model"${modelOverrideCatalog.options.length > 0 ? '' : ' disabled'}>
+            <option value="">Choose configured model</option>
+            ${modelOverrideCatalog.options.map((option) => `<option value="${option.modelId}">${option.label}</option>`).join('')}
+          </select>
+          <span class="hint" id="specific-model-hint">${modelOverrideCatalog.options.length > 0
+            ? 'Configured models only. Unconfigured models are blocked before submit.'
+            : 'No configured models available for specific override.'}</span>
+        </div>
 
         <div class="field-group" id="template-fields-block" hidden>
           <label>Template inputs</label>
@@ -1531,8 +1591,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose freeform, refactor, debug, or architecture-analysis template and fill any required template inputs.</li>
           <li>Choose template default, selection-first, current-file-first, or manual-only mode, then refresh preview if editor state changed.</li>
+          <li>Choose automatic model selection, default-model override, or specific configured model before submit.</li>
           <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
-          <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor when available.</li>
+          <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor using latest checkpointed override state when available.</li>
         </ol>
       </section>
     </main>
@@ -1540,6 +1601,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
       const taskTemplates = ${JSON.stringify(BUILT_IN_TASK_TEMPLATES)};
+      const modelOverrideCatalog = ${JSON.stringify(modelOverrideCatalog)};
       const customTaskTemplateId = '${CUSTOM_TASK_TEMPLATE_ID}';
       const statusLabels = {
         idle: 'Idle',
@@ -1554,6 +1616,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const contextModeInput = document.getElementById('context-mode');
       const contextModeHint = document.getElementById('context-mode-hint');
       const includeSupportingContextInput = document.getElementById('include-supporting-context');
+      const modelOverrideModeInput = document.getElementById('model-override-mode');
+      const modelOverrideHint = document.getElementById('model-override-hint');
+      const specificModelBlock = document.getElementById('specific-model-block');
+      const specificModelInput = document.getElementById('specific-model');
+      const specificModelHint = document.getElementById('specific-model-hint');
       const templateFieldsBlock = document.getElementById('template-fields-block');
       const templateFields = document.getElementById('template-fields');
       const taskInput = document.getElementById('task-input');
@@ -1724,6 +1791,38 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           ? 'Template default: ' + strategy.mode + ' · max ' + strategy.maxChars.toLocaleString('en-US') + ' chars/context.'
           : 'Override: ' + effectiveMode + ' · max ' + strategy.maxChars.toLocaleString('en-US') + ' chars/context.';
         contextModeHint.textContent = modeDescription;
+      }
+
+      function syncModelOverrideControls() {
+        if (!modelOverrideCatalog.available) {
+          modelOverrideModeInput.value = 'auto';
+          modelOverrideModeInput.disabled = true;
+          specificModelBlock.hidden = true;
+          specificModelInput.disabled = true;
+          modelOverrideHint.textContent = 'Model override unavailable. ' + (modelOverrideCatalog.error || 'Runtime configuration missing.');
+          specificModelHint.textContent = 'Configure runtime before using manual model override.';
+          return;
+        }
+
+        modelOverrideModeInput.disabled = false;
+        const selectedMode = modelOverrideModeInput.value;
+        const isSpecificMode = selectedMode === 'specific';
+        specificModelBlock.hidden = !isSpecificMode;
+        specificModelInput.disabled = !isSpecificMode || modelOverrideCatalog.options.length === 0;
+
+        if (selectedMode === 'simple-default') {
+          modelOverrideHint.textContent = 'Pinned to simple default model ' + modelOverrideCatalog.defaultSimpleModel + '.';
+        } else if (selectedMode === 'complex-default') {
+          modelOverrideHint.textContent = 'Pinned to complex default model ' + modelOverrideCatalog.defaultComplexModel + '.';
+        } else if (selectedMode === 'specific') {
+          modelOverrideHint.textContent = 'Pinned to specific configured model. Route still decides pipeline path.';
+        } else {
+          modelOverrideHint.textContent = 'Auto follows router. Simple default=' + modelOverrideCatalog.defaultSimpleModel + ' · complex default=' + modelOverrideCatalog.defaultComplexModel + '.';
+        }
+
+        specificModelHint.textContent = isSpecificMode
+          ? 'Only configured models appear here. Invalid combinations are blocked before submit.'
+          : 'Choose specific mode to pin execution to one configured model.';
       }
 
       function renderContextPreview(message) {
@@ -1944,7 +2043,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           rerunStageSelect.disabled = resultView.rerunTargets.length === 0;
           rerunStageButton.disabled = resultView.rerunTargets.length === 0;
           rerunStageHint.textContent = resultView.rerunTargets.length > 0
-            ? 'Reuse latest checkpoint and rerun from selected stage.'
+            ? 'Reuse latest checkpoint, including manual override state, and rerun from selected stage.'
             : 'Run full task once to unlock stage rerun.';
           traceList.replaceChildren(
             ...resultView.traceEntries.map((entry) => {
@@ -1995,9 +2094,21 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         const templateId = templateSelect.value;
         const templateValues = collectTemplateValues();
         const includeSupportingContext = includeSupportingContextInput.checked;
+        const modelOverrideMode = modelOverrideModeInput.value;
+        const overrideModelId = specificModelInput.value;
         const submittedTask = value.trim() || (templateId === customTaskTemplateId ? '' : templateSelect.options[templateSelect.selectedIndex].textContent + ' template');
         setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', submittedTask, '', '');
-        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache, templateId, templateValues, includeSupportingContext });
+        vscode.postMessage({
+          type: 'submitTask',
+          value,
+          contextMode,
+          ignoreCache,
+          templateId,
+          templateValues,
+          includeSupportingContext,
+          modelOverrideMode,
+          overrideModelId,
+        });
       }
 
       function submitRerun() {
@@ -2027,6 +2138,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         requestContextPreview();
       });
       includeSupportingContextInput.addEventListener('change', () => requestContextPreview());
+      modelOverrideModeInput.addEventListener('change', () => syncModelOverrideControls());
       templateFields.addEventListener('input', () => {
         const template = getSelectedTemplate();
         if (!template) {
@@ -2043,6 +2155,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
       renderTemplateFields();
       syncContextControls(true);
+  syncModelOverrideControls();
       requestContextPreview();
 
       window.addEventListener('message', (event) => {

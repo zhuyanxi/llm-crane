@@ -56,6 +56,9 @@ importers:
       '@llm-crane/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@llm-crane/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@llm-crane/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas

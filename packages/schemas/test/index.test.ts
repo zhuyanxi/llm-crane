@@ -34,6 +34,25 @@ describe('TaskRequestSchema', () => {
     expect(parsed.taskTemplate?.values.goal).toBe('reduce duplication');
   });
 
+  it('parses typed manual model override metadata', () => {
+    const parsed = TaskRequestSchema.parse({
+      task: 'Review current file with explicit model choice',
+      policyOverrides: {
+        modelOverride: {
+          mode: 'specific',
+          modelId: 'claude-3-5-sonnet-latest',
+        },
+      },
+    });
+
+    expect(parsed.policyOverrides?.modelOverride?.mode).toBe('specific');
+    if (parsed.policyOverrides?.modelOverride?.mode !== 'specific') {
+      throw new Error('Expected specific model override metadata');
+    }
+
+    expect(parsed.policyOverrides.modelOverride.modelId).toBe('claude-3-5-sonnet-latest');
+  });
+
   it('adds default context priority metadata when contexts are provided', () => {
     const parsed = TaskRequestSchema.parse({
       task: 'Review current file',
