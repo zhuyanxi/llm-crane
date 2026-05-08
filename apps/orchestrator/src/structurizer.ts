@@ -1,9 +1,11 @@
 import { STRUCTURIZER_SYSTEM_PROMPT } from '@llm-crane/prompts';
 import {
   StructurizerResultSchema,
+  getTaskTemplateDefinition,
   type QualityBar,
   type StructuredTask,
   type StructuredTaskTarget,
+  type TaskTemplateDefinition,
   type StructuredTaskType,
   type StructurizerResult,
   type TaskContext,
@@ -48,7 +50,22 @@ function summarizeContext(context: TaskContext): string {
   return parts.join(' / ');
 }
 
+function resolveTaskTemplate(taskRequest: TaskRequest): TaskTemplateDefinition | undefined {
+  const templateId = taskRequest.taskTemplate?.templateId;
+  return templateId ? getTaskTemplateDefinition(templateId) : undefined;
+}
+
+function normalizeTemplateValues(taskRequest: TaskRequest): Record<string, string> {
+  const entries = Object.entries(taskRequest.taskTemplate?.values ?? {}).map(([fieldId, value]) => [fieldId, normalizeText(value)]);
+  return Object.fromEntries(entries.filter(([, value]) => value.length > 0));
+}
+
 function detectTaskType(taskRequest: TaskRequest): StructuredTaskType {
+  const templateDefinition = resolveTaskTemplate(taskRequest);
+  if (templateDefinition) {
+    return templateDefinition.taskType;
+  }
+
   if (taskRequest.taskType) {
     const normalizedTaskType = taskRequest.taskType.toLowerCase();
     if (
@@ -143,7 +160,7 @@ function detectTarget(taskRequest: TaskRequest): StructuredTaskTarget {
 }
 
 function extractConstraints(taskRequest: TaskRequest): string[] {
-  const extractedConstraints = [...taskRequest.constraints];
+  const extractedConstraints = [...taskRequest.constraints, ...(resolveTaskTemplate(taskRequest)?.defaultConstraints ?? [])];
   const taskText = normalizeText(taskRequest.task);
   const patterns: Array<{ pattern: RegExp; prefix: string }> = [
     { pattern: /without\s+([^,.;]+)/gi, prefix: 'Avoid' },
@@ -172,6 +189,20 @@ function inferOpenQuestions(
 ): string[] {
   const openQuestions: string[] = [];
   const taskText = normalizeText(taskRequest.task).toLowerCase();
+  const templateDefinition = resolveTaskTemplate(taskRequest);
+  const templateValues = normalizeTemplateValues(taskRequest);
+
+  if (taskRequest.taskTemplate && !templateDefinition) {
+    openQuestions.push(`Which task template should replace unknown template id "${taskRequest.taskTemplate.templateId}"?`);
+  }
+
+  if (templateDefinition) {
+    for (const field of templateDefinition.inputFields) {
+      if (field.required && !templateValues[field.fieldId]) {
+        openQuestions.push(`What template input is missing for ${field.label}?`);
+      }
+    }
+  }
 
   if (target.kind === 'unknown') {
     openQuestions.push('What code artifact should this task apply to?');
@@ -220,9 +251,14 @@ function inferUncertaintyReasons(taskType: StructuredTaskType, target: Structure
 
 function inferWarnings(taskRequest: TaskRequest, openQuestions: string[]): string[] {
   const warnings: string[] = [];
+  const templateDefinition = resolveTaskTemplate(taskRequest);
 
   if (taskRequest.contexts.length === 0) {
     warnings.push('Structurizer relied only on manual task text.');
+  }
+
+  if (taskRequest.taskTemplate && !templateDefinition) {
+    warnings.push(`Unknown task template id ${taskRequest.taskTemplate.templateId}; structurizer fell back to free-text heuristics.`);
   }
 
   if (openQuestions.length > 0) {
@@ -233,6 +269,8 @@ function inferWarnings(taskRequest: TaskRequest, openQuestions: string[]): strin
 }
 
 function buildStructuredTask(taskRequest: TaskRequest): StructuredTask {
+  const templateDefinition = resolveTaskTemplate(taskRequest);
+  const templateValues = normalizeTemplateValues(taskRequest);
   const taskType = detectTaskType(taskRequest);
   const target = detectTarget(taskRequest);
   const constraints = extractConstraints(taskRequest);
@@ -244,6 +282,15 @@ function buildStructuredTask(taskRequest: TaskRequest): StructuredTask {
     taskType,
     goal: normalizeText(taskRequest.task),
     target,
+    template: templateDefinition
+      ? {
+          templateId: templateDefinition.templateId,
+          label: templateDefinition.label,
+          taskType: templateDefinition.taskType,
+          defaultConstraints: templateDefinition.defaultConstraints,
+          values: templateValues,
+        }
+      : undefined,
     qualityBar: detectQualityBar(taskRequest),
     constraints,
     openQuestions,
@@ -253,9 +300,13 @@ function buildStructuredTask(taskRequest: TaskRequest): StructuredTask {
 }
 
 export function buildStructurizerPrompt(taskRequest: TaskRequest): string {
+  const templateDefinition = resolveTaskTemplate(taskRequest);
   return [
     STRUCTURIZER_SYSTEM_PROMPT,
     `Task: ${normalizeText(taskRequest.task)}`,
+    templateDefinition
+      ? `Task template: ${templateDefinition.templateId} (${templateDefinition.label}) ${JSON.stringify(normalizeTemplateValues(taskRequest))}`
+      : 'Task template: none',
     `Context count: ${taskRequest.contexts.length}`,
     `Known constraints: ${extractConstraints(taskRequest).join(' | ') || 'none'}`,
   ].join('\n');

@@ -173,6 +173,154 @@ export const PipelineTraceEventSchema = z.object({
 
 export const StructuredTaskTypeSchema = z.enum(['refactor', 'debug', 'analysis', 'implementation', 'test', 'other']);
 
+export const TaskTemplateFieldKindSchema = z.enum(['short-text', 'long-text']);
+
+export const TaskTemplateFieldSchema = z.object({
+  fieldId: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1).optional(),
+  kind: TaskTemplateFieldKindSchema,
+  required: z.boolean().default(false),
+  placeholder: z.string().min(1).optional(),
+});
+
+export const TaskTemplateDefinitionSchema = z.object({
+  templateId: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().min(1),
+  taskType: StructuredTaskTypeSchema,
+  defaultConstraints: z.array(z.string().min(1)).default([]),
+  inputFields: z.array(TaskTemplateFieldSchema).min(1),
+});
+
+export const TaskTemplateInputSchema = z.object({
+  templateId: z.string().min(1),
+  values: z.record(z.string(), z.string()).default({}),
+});
+
+export const StructuredTaskTemplateSchema = z.object({
+  templateId: z.string().min(1),
+  label: z.string().min(1),
+  taskType: StructuredTaskTypeSchema,
+  defaultConstraints: z.array(z.string().min(1)).default([]),
+  values: z.record(z.string(), z.string()).default({}),
+});
+
+export const BUILT_IN_TASK_TEMPLATES = z.array(TaskTemplateDefinitionSchema).parse([
+  {
+    templateId: 'refactor',
+    label: 'Refactor',
+    description: 'Restructure existing code while keeping requested behavior and public contracts stable.',
+    taskType: 'refactor',
+    defaultConstraints: [
+      'Keep public API stable unless change is explicitly requested.',
+      'Preserve existing behavior unless fixing clearly stated bug.',
+    ],
+    inputFields: [
+      {
+        fieldId: 'target',
+        label: 'Target code',
+        description: 'Selection, file, symbol, or module to refactor.',
+        kind: 'short-text',
+        required: true,
+        placeholder: 'current selection or src/auth.ts',
+      },
+      {
+        fieldId: 'goal',
+        label: 'Refactor goal',
+        description: 'Main quality goal such as deduplication, readability, or decomposition.',
+        kind: 'long-text',
+        required: true,
+        placeholder: 'reduce duplication and improve readability',
+      },
+      {
+        fieldId: 'guardrails',
+        label: 'Guardrails',
+        description: 'Extra limits or non-goals.',
+        kind: 'long-text',
+        required: false,
+        placeholder: 'avoid schema changes and keep existing tests intact',
+      },
+    ],
+  },
+  {
+    templateId: 'debug',
+    label: 'Debug',
+    description: 'Investigate failure path, isolate root cause, and keep speculation explicit.',
+    taskType: 'debug',
+    defaultConstraints: [
+      'Prioritize root cause over speculative fixes.',
+      'Call out missing repro steps or evidence before guessing.',
+    ],
+    inputFields: [
+      {
+        fieldId: 'target',
+        label: 'Target code',
+        description: 'Failing file, symbol, workflow, or subsystem.',
+        kind: 'short-text',
+        required: true,
+        placeholder: 'src/auth.ts login flow',
+      },
+      {
+        fieldId: 'symptom',
+        label: 'Observed symptom',
+        description: 'Error, failing behavior, or wrong output.',
+        kind: 'long-text',
+        required: true,
+        placeholder: 'token expires immediately after login',
+      },
+      {
+        fieldId: 'reproduction',
+        label: 'Reproduction or evidence',
+        description: 'Stack trace, logs, or steps to reproduce.',
+        kind: 'long-text',
+        required: false,
+        placeholder: 'open app, log in, see 401 on second request',
+      },
+    ],
+  },
+  {
+    templateId: 'architecture-analysis',
+    label: 'Architecture Analysis',
+    description: 'Review architecture, identify high-impact risks, and rank them before proposing changes.',
+    taskType: 'analysis',
+    defaultConstraints: [
+      'Rank risks before proposing remediation.',
+      'Do not invent system details that are missing from provided context.',
+    ],
+    inputFields: [
+      {
+        fieldId: 'scope',
+        label: 'Analysis scope',
+        description: 'Repo, subsystem, workflow, or boundary to assess.',
+        kind: 'short-text',
+        required: true,
+        placeholder: 'workspace auth and session boundaries',
+      },
+      {
+        fieldId: 'focus',
+        label: 'Risk focus',
+        description: 'Lens such as maintainability, scalability, reliability, or coupling.',
+        kind: 'long-text',
+        required: true,
+        placeholder: 'coupling, failure isolation, and scaling bottlenecks',
+      },
+      {
+        fieldId: 'deliverable',
+        label: 'Expected output',
+        description: 'Preferred output shape such as ranked risks, migration outline, or tradeoff summary.',
+        kind: 'long-text',
+        required: false,
+        placeholder: 'rank top 3 risks and propose minimal remediation path',
+      },
+    ],
+  },
+]);
+
+export function getTaskTemplateDefinition(templateId: string) {
+  return BUILT_IN_TASK_TEMPLATES.find((definition) => definition.templateId === templateId);
+}
+
 export const StructuredTaskTargetKindSchema = z.enum(['selection', 'file', 'symbol', 'workspace', 'unknown']);
 
 export const StructuredTaskTargetSchema = z.object({
@@ -186,6 +334,7 @@ export const StructuredTaskSchema = z.object({
   taskType: StructuredTaskTypeSchema,
   goal: z.string().min(1),
   target: StructuredTaskTargetSchema,
+  template: StructuredTaskTemplateSchema.optional(),
   qualityBar: QualityBarSchema,
   constraints: z.array(z.string()).default([]),
   openQuestions: z.array(z.string()).default([]),
@@ -287,6 +436,7 @@ export const ReasonerResultSchema = z.object({
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
+  taskTemplate: TaskTemplateInputSchema.optional(),
   qualityBar: QualityBarSchema.default('balanced'),
   cacheMode: CacheModeSchema.default('default'),
   contexts: z.array(TaskContextSchema).default([]),
@@ -604,6 +754,11 @@ export type PipelineTraceMetadataValue = z.infer<typeof PipelineTraceMetadataVal
 export type PipelineTraceError = z.infer<typeof PipelineTraceErrorSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
 export type StructuredTaskType = z.infer<typeof StructuredTaskTypeSchema>;
+export type TaskTemplateFieldKind = z.infer<typeof TaskTemplateFieldKindSchema>;
+export type TaskTemplateField = z.infer<typeof TaskTemplateFieldSchema>;
+export type TaskTemplateDefinition = z.infer<typeof TaskTemplateDefinitionSchema>;
+export type TaskTemplateInput = z.infer<typeof TaskTemplateInputSchema>;
+export type StructuredTaskTemplate = z.infer<typeof StructuredTaskTemplateSchema>;
 export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;
 export type StructuredTaskTarget = z.infer<typeof StructuredTaskTargetSchema>;
 export type StructuredTask = z.infer<typeof StructuredTaskSchema>;

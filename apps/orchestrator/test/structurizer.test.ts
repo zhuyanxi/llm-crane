@@ -81,6 +81,34 @@ describe('structurizeTaskRequest', () => {
     expect(result.structuredTask.openQuestions).toContain('What code artifact should this task apply to?');
     expect(result.fallbackReason).toBeTruthy();
   });
+
+  it('threads task template metadata and default constraints into structured task', () => {
+    const result = structurizeTaskRequest(
+      makeTaskRequest('Refactor task\nTarget code: src/auth.ts\nRefactor goal: reduce duplication', {
+        taskTemplate: {
+          templateId: 'refactor',
+          values: {
+            target: 'src/auth.ts',
+            goal: 'reduce duplication',
+          },
+        },
+        contexts: [
+          {
+            source: 'file',
+            uri: '/workspace/src/auth.ts',
+            languageId: 'typescript',
+            content: 'export function login() { return authenticate(); }',
+          },
+        ],
+      }),
+    );
+
+    expect(result.status).toBe('structured');
+    expect(result.structuredTask.taskType).toBe('refactor');
+    expect(result.structuredTask.template?.templateId).toBe('refactor');
+    expect(result.structuredTask.template?.values.goal).toBe('reduce duplication');
+    expect(result.structuredTask.constraints).toContain('Keep public API stable unless change is explicitly requested.');
+  });
 });
 
 describe('parseStructurizerOutput', () => {
@@ -162,5 +190,22 @@ describe('buildStructurizerPrompt', () => {
 
     expect(prompt).toContain('Analyze current file for architecture issues.');
     expect(prompt).toContain('Context count: 1');
+  });
+
+  it('includes selected task template in prompt template', () => {
+    const prompt = buildStructurizerPrompt(
+      makeTaskRequest('Architecture Analysis task\nAnalysis scope: auth subsystem\nRisk focus: coupling', {
+        taskTemplate: {
+          templateId: 'architecture-analysis',
+          values: {
+            scope: 'auth subsystem',
+            focus: 'coupling',
+          },
+        },
+      }),
+    );
+
+    expect(prompt).toContain('Task template: architecture-analysis');
+    expect(prompt).toContain('auth subsystem');
   });
 });

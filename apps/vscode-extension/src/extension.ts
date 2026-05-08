@@ -1,6 +1,16 @@
 import * as vscode from 'vscode';
 import { LLMCraneDiagnosticError } from '@llm-crane/core';
-import { TaskRequestSchema, type RerunTaskRequest, type RerunnableStageId, type TaskContext, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
+import {
+  BUILT_IN_TASK_TEMPLATES,
+  TaskRequestSchema,
+  getTaskTemplateDefinition,
+  type RerunTaskRequest,
+  type RerunnableStageId,
+  type TaskContext,
+  type TaskRequest,
+  type TaskResponse,
+  type TaskTemplateDefinition,
+} from '@llm-crane/schemas';
 import {
   OrchestratorProcessManager,
   type OrchestratorReadyMode,
@@ -8,6 +18,7 @@ import {
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
+const CUSTOM_TASK_TEMPLATE_ID = 'custom';
 
 type ContextCaptureMode = 'manual' | 'selection' | 'file' | 'auto';
 
@@ -16,6 +27,8 @@ type SubmitTaskPanelInboundMessage = {
   value: string;
   contextMode: ContextCaptureMode;
   ignoreCache: boolean;
+  templateId: string;
+  templateValues: Record<string, string>;
 };
 
 type RerunTaskPanelInboundMessage = {
@@ -133,12 +146,12 @@ async function handleTaskPanelMessage(
   panelSession: TaskPanelSession,
 ): Promise<void> {
   if (isSubmitTaskPanelInboundMessage(message)) {
-    const taskText = message.value.trim();
-    if (!taskText) {
+    const taskDraft = buildTaskDraftPreview(message.value, message.templateId, message.templateValues);
+    if (!taskDraft) {
       postTaskStatus(webview, {
         status: 'error',
         headline: 'Task description required',
-        detail: 'Enter task text before submitting.',
+        detail: 'Enter task text or choose a template with the required inputs before submitting.',
       });
       return;
     }
@@ -147,16 +160,16 @@ async function handleTaskPanelMessage(
       status: 'running',
       headline: 'Submitting task',
       detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process${message.ignoreCache ? ' with cache bypass enabled' : ''}.`,
-      submittedTask: taskText,
+      submittedTask: taskDraft,
     });
 
     try {
-      const taskRequest = buildTaskRequest(taskText, message.contextMode, message.ignoreCache);
+      const taskRequest = buildTaskRequest(message.value, message.contextMode, message.ignoreCache, message.templateId, message.templateValues);
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
       const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
 
       panelSession.latestResponse = response;
-      panelSession.latestSubmittedTask = taskText;
+      panelSession.latestSubmittedTask = taskRequest.task;
 
       postTaskStatus(webview, {
         status: hasFailureDiagnostic ? 'error' : 'success',
@@ -166,7 +179,7 @@ async function handleTaskPanelMessage(
             ? 'Orchestrator started and responded'
             : 'Orchestrator response received',
         detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
-        submittedTask: taskText,
+        submittedTask: taskRequest.task,
         requestPreview: JSON.stringify(taskRequest, null, 2),
         resultView: createTaskResultView(response),
       });
@@ -183,7 +196,7 @@ async function handleTaskPanelMessage(
         status: 'error',
         headline,
         detail,
-        submittedTask: taskText,
+        submittedTask: taskDraft,
       });
     }
     return;
@@ -274,6 +287,8 @@ function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTas
     typeof candidate.value === 'string' &&
     typeof candidate.contextMode === 'string' &&
     typeof candidate.ignoreCache === 'boolean' &&
+    typeof candidate.templateId === 'string' &&
+    isStringRecord(candidate.templateValues) &&
     isContextCaptureMode(candidate.contextMode)
   );
 }
@@ -295,9 +310,105 @@ function isContextCaptureMode(value: string): value is ContextCaptureMode {
   return value === 'manual' || value === 'selection' || value === 'file' || value === 'auto';
 }
 
-function buildTaskRequest(task: string, contextMode: ContextCaptureMode, ignoreCache: boolean): TaskRequest {
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  return Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function normalizeTemplateValues(templateValues: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(templateValues)
+      .map(([fieldId, value]) => [fieldId, value.trim()])
+      .filter(([, value]) => value.length > 0),
+  );
+}
+
+function buildTemplateTaskText(
+  templateDefinition: TaskTemplateDefinition,
+  templateValues: Record<string, string>,
+  additionalInstructions: string,
+): string {
+  const lines = [`${templateDefinition.label} task`];
+
+  for (const field of templateDefinition.inputFields) {
+    const value = templateValues[field.fieldId];
+    if (value) {
+      lines.push(`${field.label}: ${value}`);
+    }
+  }
+
+  if (additionalInstructions.trim().length > 0) {
+    lines.push(`Additional instructions: ${additionalInstructions.trim()}`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildTaskDraftPreview(task: string, templateId: string, templateValues: Record<string, string>): string {
+  const trimmedTask = task.trim();
+
+  if (templateId === CUSTOM_TASK_TEMPLATE_ID) {
+    return trimmedTask;
+  }
+
+  const templateDefinition = getTaskTemplateDefinition(templateId);
+  if (!templateDefinition) {
+    return trimmedTask;
+  }
+
+  return buildTemplateTaskText(templateDefinition, normalizeTemplateValues(templateValues), trimmedTask).trim();
+}
+
+function validateTemplateInputs(templateDefinition: TaskTemplateDefinition, templateValues: Record<string, string>): void {
+  const missingFields = templateDefinition.inputFields
+    .filter((field) => field.required && !templateValues[field.fieldId])
+    .map((field) => field.label);
+
+  if (missingFields.length > 0) {
+    throw new Error(`Template ${templateDefinition.label} requires: ${missingFields.join(', ')}.`);
+  }
+}
+
+function buildTaskRequest(
+  task: string,
+  contextMode: ContextCaptureMode,
+  ignoreCache: boolean,
+  templateId: string,
+  templateValues: Record<string, string>,
+): TaskRequest {
+  const normalizedTask = task.trim();
+  const normalizedTemplateValues = normalizeTemplateValues(templateValues);
+  const templateDefinition = templateId === CUSTOM_TASK_TEMPLATE_ID ? undefined : getTaskTemplateDefinition(templateId);
+
+  if (templateId !== CUSTOM_TASK_TEMPLATE_ID && !templateDefinition) {
+    throw new Error(`Unknown task template id: ${templateId}.`);
+  }
+
+  if (templateDefinition) {
+    validateTemplateInputs(templateDefinition, normalizedTemplateValues);
+  }
+
+  const resolvedTask = templateDefinition
+    ? buildTemplateTaskText(templateDefinition, normalizedTemplateValues, normalizedTask)
+    : normalizedTask;
+
+  if (!resolvedTask.trim()) {
+    throw new Error('Enter task text or choose a template with the required inputs before submitting.');
+  }
+
   return TaskRequestSchema.parse({
-    task,
+    task: resolvedTask,
+    taskType: templateDefinition?.taskType,
+    taskTemplate: templateDefinition
+      ? {
+          templateId: templateDefinition.templateId,
+          values: normalizedTemplateValues,
+        }
+      : undefined,
+    constraints: templateDefinition?.defaultConstraints ?? [],
     cacheMode: ignoreCache ? 'bypass' : 'default',
     contexts: collectTaskContexts(contextMode),
   });
@@ -393,8 +504,13 @@ function getContextModeLabel(contextMode: ContextCaptureMode): string {
 }
 
 function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: ContextCaptureMode): string {
+  const templateDefinition = taskRequest.taskTemplate ? getTaskTemplateDefinition(taskRequest.taskTemplate.templateId) : undefined;
+  const templatePrefix = templateDefinition
+    ? `Template ${templateDefinition.label}. `
+    : 'Freeform task. ';
+
   if (taskRequest.contexts.length === 0) {
-    return `${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Manual input only. No editor context attached.`;
+    return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Manual input only. No editor context attached.`;
   }
 
   const details = taskRequest.contexts
@@ -410,7 +526,7 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
     })
     .join('; ');
 
-  return `${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
+  return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
 }
 
 function formatTaskResponseSummary(
@@ -760,6 +876,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         font-weight: 600;
       }
 
+      input,
       select,
       textarea {
         width: 100%;
@@ -781,6 +898,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         line-height: 1.5;
       }
 
+      input:focus,
       select:focus,
       textarea:focus {
         outline: 1px solid var(--vscode-focusBorder);
@@ -790,6 +908,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       .field-group {
         display: grid;
         gap: 8px;
+      }
+
+      .template-fields {
+        display: grid;
+        gap: 12px;
       }
 
       .actions {
@@ -1013,15 +1136,26 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S04</p>
+        <p class="eyebrow">V1-S05</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
-          Use Command Palette entry to open panel, describe task, choose context mode, then submit from inside VS Code. Current
-          step covers output text, selected model, diagnostic state, cache state, execution path, readable trace, token usage, latency, cost estimate, and stage rerun from checkpoint.
+          Use Command Palette entry to open panel, choose a task template or freeform mode, attach context, then submit from inside VS Code.
+          Current step adds template-driven task inputs for refactor, debug, and architecture analysis while keeping the existing output,
+          selected model, diagnostic state, cache state, execution path, trace, token usage, latency, cost estimate, and stage rerun flow.
         </p>
       </header>
 
       <section class="composer">
+        <div class="field-group">
+          <label for="task-template">Task template</label>
+          <select id="task-template">
+            <option value="${CUSTOM_TASK_TEMPLATE_ID}" selected>Custom freeform task</option>
+            ${BUILT_IN_TASK_TEMPLATES.map((template) => `<option value="${template.templateId}">${template.label}</option>`).join('')}
+          </select>
+          <span class="hint" id="task-template-description">Use freeform text or choose a template with default constraints.</span>
+          <span class="hint" id="task-template-constraints"></span>
+        </div>
+
         <div class="field-group">
           <label for="context-mode">Context mode</label>
           <select id="context-mode">
@@ -1033,9 +1167,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <span class="hint">Manual only prevents sending editor content. Auto prefers selection when available.</span>
         </div>
 
+        <div class="field-group" id="template-fields-block" hidden>
+          <label>Template inputs</label>
+          <div class="template-fields" id="template-fields"></div>
+        </div>
+
         <div class="field-group">
-          <label for="task-input">Task description</label>
+          <label for="task-input">Additional instructions</label>
           <textarea id="task-input" placeholder="Example: Review current file, explain bug risk, propose small refactor."></textarea>
+          <span class="hint">Freeform mode requires task text. Template mode can run from template inputs alone and will append anything typed here.</span>
         </div>
 
         <label class="checkbox-row" for="ignore-cache">
@@ -1130,6 +1270,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <h2>How to use</h2>
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
+          <li>Choose freeform, refactor, debug, or architecture-analysis template and fill any required template inputs.</li>
           <li>Choose manual-only, selection, file, or auto mode.</li>
           <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
           <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor when available.</li>
@@ -1139,6 +1280,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
+      const taskTemplates = ${JSON.stringify(BUILT_IN_TASK_TEMPLATES)};
+      const customTaskTemplateId = '${CUSTOM_TASK_TEMPLATE_ID}';
       const statusLabels = {
         idle: 'Idle',
         running: 'Running',
@@ -1146,7 +1289,12 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         error: 'Failed',
       };
 
+      const templateSelect = document.getElementById('task-template');
+      const templateDescription = document.getElementById('task-template-description');
+      const templateConstraints = document.getElementById('task-template-constraints');
       const contextModeInput = document.getElementById('context-mode');
+      const templateFieldsBlock = document.getElementById('template-fields-block');
+      const templateFields = document.getElementById('template-fields');
       const taskInput = document.getElementById('task-input');
       const ignoreCacheInput = document.getElementById('ignore-cache');
       const runTaskButton = document.getElementById('run-task');
@@ -1180,6 +1328,96 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const rerunStageButton = document.getElementById('rerun-stage-button');
       const rerunStageHint = document.getElementById('rerun-stage-hint');
       const traceList = document.getElementById('trace-list');
+      const templateFieldState = {};
+
+      function getSelectedTemplate() {
+        return taskTemplates.find((template) => template.templateId === templateSelect.value);
+      }
+
+      function getTemplateFieldInputId(templateId, fieldId) {
+        return 'template-field-' + templateId + '-' + fieldId;
+      }
+
+      function collectTemplateValues() {
+        const template = getSelectedTemplate();
+        if (!template) {
+          return {};
+        }
+
+        const values = {};
+        for (const field of template.inputFields) {
+          const input = document.getElementById(getTemplateFieldInputId(template.templateId, field.fieldId));
+          if (!input || typeof input.value !== 'string') {
+            continue;
+          }
+
+          const value = input.value.trim();
+          if (value) {
+            values[field.fieldId] = value;
+          }
+        }
+
+        return values;
+      }
+
+      function createTemplateField(template, field, currentValue) {
+        const fieldGroup = document.createElement('div');
+        fieldGroup.className = 'field-group';
+
+        const label = document.createElement('label');
+        label.htmlFor = getTemplateFieldInputId(template.templateId, field.fieldId);
+        label.textContent = field.required ? field.label + ' *' : field.label;
+        fieldGroup.appendChild(label);
+
+        const input = document.createElement(field.kind === 'long-text' ? 'textarea' : 'input');
+        input.id = getTemplateFieldInputId(template.templateId, field.fieldId);
+        input.dataset.templateFieldId = field.fieldId;
+        if (field.kind === 'short-text') {
+          input.type = 'text';
+        }
+        if (field.placeholder) {
+          input.placeholder = field.placeholder;
+        }
+        if (currentValue) {
+          input.value = currentValue;
+        }
+        if (field.required) {
+          input.setAttribute('aria-required', 'true');
+        }
+        fieldGroup.appendChild(input);
+
+        if (field.description) {
+          const hint = document.createElement('span');
+          hint.className = 'hint';
+          hint.textContent = field.description;
+          fieldGroup.appendChild(hint);
+        }
+
+        return fieldGroup;
+      }
+
+      function renderTemplateFields() {
+        const template = getSelectedTemplate();
+        if (!template) {
+          templateDescription.textContent = 'Use freeform text or choose a template with default constraints.';
+          templateConstraints.textContent = '';
+          templateFieldsBlock.hidden = true;
+          templateFields.replaceChildren();
+          taskInput.placeholder = 'Example: Review current file, explain bug risk, propose small refactor.';
+          return;
+        }
+
+        const savedValues = templateFieldState[template.templateId] ?? {};
+        templateDescription.textContent = template.description;
+        templateConstraints.textContent = template.defaultConstraints.length > 0
+          ? 'Default constraints: ' + template.defaultConstraints.join(' | ')
+          : 'No template defaults.';
+        templateFieldsBlock.hidden = false;
+        templateFields.replaceChildren(
+          ...template.inputFields.map((field) => createTemplateField(template, field, savedValues[field.fieldId] ?? '')),
+        );
+        taskInput.placeholder = 'Optional extra details, desired output shape, or edge cases.';
+      }
 
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
         statusPanel.className = 'status-panel status-' + status;
@@ -1279,8 +1517,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         const value = taskInput.value;
         const contextMode = contextModeInput.value;
         const ignoreCache = ignoreCacheOverride ?? ignoreCacheInput.checked;
-        setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', value, '', '');
-        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache });
+        const templateId = templateSelect.value;
+        const templateValues = collectTemplateValues();
+        const submittedTask = value.trim() || (templateId === customTaskTemplateId ? '' : templateSelect.options[templateSelect.selectedIndex].textContent + ' template');
+        setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', submittedTask, '', '');
+        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache, templateId, templateValues });
       }
 
       function submitRerun() {
@@ -1299,11 +1540,22 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         submitTask(true);
       });
       rerunStageButton.addEventListener('click', () => submitRerun());
+      templateSelect.addEventListener('change', () => renderTemplateFields());
+      templateFields.addEventListener('input', () => {
+        const template = getSelectedTemplate();
+        if (!template) {
+          return;
+        }
+
+        templateFieldState[template.templateId] = collectTemplateValues();
+      });
       taskInput.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
           submitTask();
         }
       });
+
+      renderTemplateFields();
 
       window.addEventListener('message', (event) => {
         const message = event.data;

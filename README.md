@@ -11,7 +11,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 
 ### What you get
 
-- Run task from VS Code Command Palette with manual, selection, file, or auto context.
+- Run task from VS Code Command Palette with freeform, refactor, debug, or architecture-analysis templates plus manual, selection, file, or auto context.
 - Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
@@ -47,11 +47,12 @@ Run inside VS Code:
 1. Build once so orchestrator output exists.
 2. Use workspace launch config `LLM Crane: Extension`.
 3. Run command `LLM Crane: Run Task`.
-4. Enter task, choose context mode, then press `Run Task` or `Run Without Cache`.
+4. Choose freeform or a task template, fill required template inputs, choose context mode, then press `Run Task` or `Run Without Cache`.
 
 ### What result panel shows
 
 - Output text from task execution
+- Validated TaskRequest preview including selected task template and template inputs when present
 - Selected provider/model
 - Pipeline graph, stage states, and execution path summary
 - Planner status, ordered steps, and planner trace entries for complex tasks
@@ -194,6 +195,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
 - Complex path runs Planner before Executor, conditionally enters Reasoner when router or planner signals extra synthesis, and falls back conservatively if planner or reasoner output is invalid
+- Task panel supports optional template metadata for refactor, debug, and architecture-analysis requests; validated template selection is carried inside `taskTemplate`
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, and marks current response as `full` or `stage-rerun`
 - Pipeline returns unified `taskResult` payload even when executor stage fails

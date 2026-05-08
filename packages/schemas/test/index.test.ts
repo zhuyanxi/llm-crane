@@ -15,6 +15,24 @@ describe('TaskRequestSchema', () => {
   it('rejects empty task', () => {
     expect(() => TaskRequestSchema.parse({ task: '' })).toThrow();
   });
+
+  it('parses task template metadata', () => {
+    const parsed = TaskRequestSchema.parse({
+      task: 'Refactor task\nTarget code: src/auth.ts\nRefactor goal: reduce duplication',
+      taskType: 'refactor',
+      taskTemplate: {
+        templateId: 'refactor',
+        values: {
+          target: 'src/auth.ts',
+          goal: 'reduce duplication',
+        },
+      },
+      constraints: ['Keep public API stable unless change is explicitly requested.'],
+    });
+
+    expect(parsed.taskTemplate?.templateId).toBe('refactor');
+    expect(parsed.taskTemplate?.values.goal).toBe('reduce duplication');
+  });
 });
 
 describe('RuntimeConfigSchema', () => {
