@@ -23,6 +23,7 @@ import {
   type EditorContextSnapshot,
 } from './taskContextPlan';
 import { buildPipelineTimeline, type TaskTimelineStageView } from './pipelineTimeline';
+import { buildRoutingInsight } from './routingInsights';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -61,6 +62,13 @@ type TaskResultView = {
   selectedModel: string;
   runtimeSummary: string;
   selectionReason: string;
+  routeSummary: string;
+  routeDetail: string;
+  routeReason: string;
+  overrideSummary: string;
+  overrideDetail: string;
+  earlyExitSummary: string;
+  earlyExitDetail: string;
   executionPathSummary: string;
   diagnosticSummary: string;
   diagnosticDetail: string;
@@ -773,6 +781,7 @@ function formatRunModeEntries(taskResponse: TaskResponse): string[] {
 }
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
+  const routingInsight = buildRoutingInsight(taskResponse);
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
     const metadataSuffix =
@@ -797,6 +806,13 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     selectedModel: formatSelectedModel(taskResponse.selectedProvider),
     runtimeSummary: formatRuntimeSummary(taskResponse.selectedProvider),
     selectionReason: taskResponse.selectedProvider.reason,
+    routeSummary: routingInsight.routeSummary,
+    routeDetail: routingInsight.routeDetail,
+    routeReason: routingInsight.routeReason,
+    overrideSummary: routingInsight.overrideSummary,
+    overrideDetail: routingInsight.overrideDetail,
+    earlyExitSummary: routingInsight.earlyExitSummary,
+    earlyExitDetail: routingInsight.earlyExitDetail,
     executionPathSummary: formatPipelineSummary(taskResponse),
     diagnosticSummary,
     diagnosticDetail,
@@ -1334,12 +1350,12 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S09</p>
+        <p class="eyebrow">V1-S10</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
-          then submit from inside VS Code. Current step adds pipeline timeline view with ordered stages, stage status, duration,
-          stage summaries, and failure highlighting while keeping existing context preview, diagnostics, cache, execution path,
+          then submit from inside VS Code. Current step adds routing explanation with route reason, confidence, early-exit savings,
+          and auto-versus-manual override status while keeping timeline, context preview, diagnostics, cache, execution path,
           trace, token usage, latency, cost estimate, and stage rerun flow.
         </p>
       </header>
@@ -1449,8 +1465,25 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="hint" id="result-reason"></p>
           </div>
           <div class="meta-card">
+            <span class="preview-label">Routing</span>
+            <p class="meta-value" id="result-route"></p>
+            <p class="hint" id="result-route-detail"></p>
+            <p class="hint" id="result-override"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Route rationale</span>
+            <p class="meta-value" id="result-route-reason"></p>
+            <p class="hint" id="result-early-exit"></p>
+            <p class="hint" id="result-early-exit-detail"></p>
+          </div>
+          <div class="meta-card">
             <span class="preview-label">Execution path</span>
             <p class="meta-value" id="result-path"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Override source</span>
+            <p class="meta-value" id="result-override-summary"></p>
+            <p class="hint" id="result-override-detail"></p>
           </div>
           <div class="meta-card">
             <span class="preview-label">Diagnostic</span>
@@ -1549,6 +1582,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultModel = document.getElementById('result-model');
       const resultRuntime = document.getElementById('result-runtime');
       const resultReason = document.getElementById('result-reason');
+      const resultRoute = document.getElementById('result-route');
+      const resultRouteDetail = document.getElementById('result-route-detail');
+      const resultRouteReason = document.getElementById('result-route-reason');
+      const resultOverride = document.getElementById('result-override');
+      const resultOverrideSummary = document.getElementById('result-override-summary');
+      const resultOverrideDetail = document.getElementById('result-override-detail');
+      const resultEarlyExit = document.getElementById('result-early-exit');
+      const resultEarlyExitDetail = document.getElementById('result-early-exit-detail');
       const resultPath = document.getElementById('result-path');
       const resultDiagnostic = document.getElementById('result-diagnostic');
       const resultDiagnosticDetail = document.getElementById('result-diagnostic-detail');
@@ -1866,6 +1907,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = resultView.selectedModel;
           resultRuntime.textContent = resultView.runtimeSummary;
           resultReason.textContent = resultView.selectionReason;
+          resultRoute.textContent = resultView.routeSummary;
+          resultRouteDetail.textContent = resultView.routeDetail;
+          resultRouteReason.textContent = resultView.routeReason;
+          resultOverride.textContent = resultView.overrideSummary;
+          resultOverrideSummary.textContent = resultView.overrideSummary;
+          resultOverrideDetail.textContent = resultView.overrideDetail;
+          resultEarlyExit.textContent = resultView.earlyExitSummary;
+          resultEarlyExitDetail.textContent = resultView.earlyExitDetail;
           resultPath.textContent = resultView.executionPathSummary;
           resultDiagnostic.textContent = resultView.diagnosticSummary;
           resultDiagnosticDetail.textContent = resultView.diagnosticDetail;
@@ -1913,6 +1962,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultModel.textContent = '';
           resultRuntime.textContent = '';
           resultReason.textContent = '';
+          resultRoute.textContent = '';
+          resultRouteDetail.textContent = '';
+          resultRouteReason.textContent = '';
+          resultOverride.textContent = '';
+          resultOverrideSummary.textContent = '';
+          resultOverrideDetail.textContent = '';
+          resultEarlyExit.textContent = '';
+          resultEarlyExitDetail.textContent = '';
           resultPath.textContent = '';
           resultDiagnostic.textContent = '';
           resultDiagnosticDetail.textContent = '';
