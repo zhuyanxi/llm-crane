@@ -22,6 +22,7 @@ import {
   type ContextCaptureMode,
   type EditorContextSnapshot,
 } from './taskContextPlan';
+import { buildPipelineTimeline, type TaskTimelineStageView } from './pipelineTimeline';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -69,6 +70,7 @@ type TaskResultView = {
   latencySummary: string;
   costSummary: string;
   costDetail: string;
+  timelineStages: TaskTimelineStageView[];
   rerunTargets: RerunnableStageId[];
   traceEntries: string[];
 };
@@ -804,6 +806,7 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     latencySummary,
     costSummary,
     costDetail,
+    timelineStages: buildPipelineTimeline(taskResponse),
     rerunTargets: getSupportedRerunTargets(taskResponse),
     traceEntries: [
       ...formatRunModeEntries(taskResponse),
@@ -1215,6 +1218,100 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         padding-left: 18px;
       }
 
+      .timeline-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .timeline-card {
+        display: grid;
+        gap: 8px;
+        padding: 12px 14px;
+        border: 1px solid var(--vscode-panel-border);
+        border-left-width: 4px;
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-panel-border));
+      }
+
+      .timeline-pending {
+        border-left-color: var(--vscode-disabledForeground);
+      }
+
+      .timeline-running {
+        border-left-color: var(--vscode-textLink-foreground);
+      }
+
+      .timeline-completed {
+        border-left-color: var(--vscode-terminal-ansiGreen);
+      }
+
+      .timeline-failed {
+        border-left-color: var(--vscode-errorForeground);
+        background: color-mix(in srgb, var(--vscode-editor-background) 88%, var(--vscode-errorForeground));
+      }
+
+      .timeline-skipped {
+        border-left-color: var(--vscode-disabledForeground);
+      }
+
+      .timeline-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .timeline-title-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .timeline-order {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 30px;
+        min-height: 30px;
+        border-radius: 999px;
+        background: var(--vscode-button-secondaryBackground);
+        color: var(--vscode-button-secondaryForeground);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .timeline-stage-meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .timeline-badge,
+      .timeline-duration {
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: var(--vscode-editor-inactiveSelectionBackground);
+      }
+
+      .timeline-summary,
+      .timeline-detail,
+      .timeline-error {
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      .timeline-detail {
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .timeline-error {
+        color: var(--vscode-errorForeground);
+      }
+
       .trace-list li {
         line-height: 1.5;
       }
@@ -1237,13 +1334,13 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S06</p>
+        <p class="eyebrow">V1-S09</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
-          then submit from inside VS Code. Current step adds selection-first, current-file-first, and manual-only collection
-          with context priority, truncation warnings, and pre-send preview while keeping existing output, diagnostics, cache,
-          execution path, trace, token usage, latency, cost estimate, and stage rerun flow.
+          then submit from inside VS Code. Current step adds pipeline timeline view with ordered stages, stage status, duration,
+          stage summaries, and failure highlighting while keeping existing context preview, diagnostics, cache, execution path,
+          trace, token usage, latency, cost estimate, and stage rerun flow.
         </p>
       </header>
 
@@ -1386,6 +1483,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <span class="hint" id="rerun-stage-hint">Run full task once to unlock stage rerun.</span>
         </div>
         <div>
+          <span class="preview-label">Pipeline timeline</span>
+          <div class="timeline-list" id="timeline-list"></div>
+        </div>
+        <div>
           <span class="preview-label">Trace</span>
           <ul class="trace-list" id="trace-list"></ul>
         </div>
@@ -1457,6 +1558,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultLatency = document.getElementById('result-latency');
       const resultCost = document.getElementById('result-cost');
       const resultCostDetail = document.getElementById('result-cost-detail');
+      const timelineList = document.getElementById('timeline-list');
       const rerunStageSelect = document.getElementById('rerun-stage');
       const rerunStageButton = document.getElementById('rerun-stage-button');
       const rerunStageHint = document.getElementById('rerun-stage-hint');
@@ -1656,6 +1758,83 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         });
       }
 
+      function renderTimelineStages(stages) {
+        if (!stages || stages.length === 0) {
+          const emptyCard = document.createElement('div');
+          emptyCard.className = 'timeline-card timeline-pending';
+
+          const summary = document.createElement('p');
+          summary.className = 'timeline-summary';
+          summary.textContent = 'No pipeline stage data available.';
+          emptyCard.appendChild(summary);
+
+          const detail = document.createElement('p');
+          detail.className = 'timeline-detail';
+          detail.textContent = 'Run task again to collect timeline state and stage summaries.';
+          emptyCard.appendChild(detail);
+
+          timelineList.replaceChildren(emptyCard);
+          return;
+        }
+
+        timelineList.replaceChildren(
+          ...stages.map((stage, index) => {
+            const card = document.createElement('article');
+            card.className = 'timeline-card timeline-' + stage.state;
+
+            const header = document.createElement('div');
+            header.className = 'timeline-card-header';
+
+            const titleGroup = document.createElement('div');
+            titleGroup.className = 'timeline-title-group';
+
+            const order = document.createElement('span');
+            order.className = 'timeline-order';
+            order.textContent = String(index + 1).padStart(2, '0');
+            titleGroup.appendChild(order);
+
+            const title = document.createElement('strong');
+            title.textContent = stage.label;
+            titleGroup.appendChild(title);
+
+            const meta = document.createElement('div');
+            meta.className = 'timeline-stage-meta';
+
+            const state = document.createElement('span');
+            state.className = 'timeline-badge';
+            state.textContent = stage.statusLabel;
+            meta.appendChild(state);
+
+            const duration = document.createElement('span');
+            duration.className = 'timeline-duration';
+            duration.textContent = stage.duration;
+            meta.appendChild(duration);
+
+            header.append(titleGroup, meta);
+            card.appendChild(header);
+
+            const summary = document.createElement('p');
+            summary.className = 'timeline-summary';
+            summary.textContent = stage.summary;
+            card.appendChild(summary);
+
+            const detail = document.createElement('p');
+            detail.className = 'timeline-detail';
+            detail.textContent = stage.detail;
+            card.appendChild(detail);
+
+            if (stage.error) {
+              const error = document.createElement('p');
+              error.className = 'timeline-error';
+              error.textContent = stage.error;
+              card.appendChild(error);
+            }
+
+            return card;
+          }),
+        );
+      }
+
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
@@ -1696,6 +1875,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = resultView.latencySummary;
           resultCost.textContent = resultView.costSummary;
           resultCostDetail.textContent = resultView.costDetail;
+          renderTimelineStages(resultView.timelineStages);
           rerunStageSelect.replaceChildren(
             ...[
               (() => {
@@ -1742,6 +1922,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = '';
           resultCost.textContent = '';
           resultCostDetail.textContent = '';
+          timelineList.replaceChildren();
           rerunStageSelect.replaceChildren();
           rerunStageSelect.disabled = true;
           rerunStageButton.disabled = true;

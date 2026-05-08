@@ -15,6 +15,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Preview template-aware context capture before sending, including selection-first, current-file-first, and manual-only strategies.
 - Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
+- Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
 - Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline.
@@ -58,6 +59,7 @@ Run inside VS Code:
 - Validated TaskRequest preview including selected task template and template inputs when present
 - Selected provider/model
 - Pipeline graph, stage states, and execution path summary
+- Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
 - Planner status, ordered steps, and planner trace entries for complex tasks
 - Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
 - Execution mode summary showing full run versus stage rerun, plus retained trace history count
@@ -202,6 +204,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Built-in templates now carry context strategy metadata, and attached contexts can include `priority`, `truncated`, and `originalLength` for preview and downstream prompts
 - Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
 - Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template
+- VS Code task panel now aggregates pipeline state plus stage trace into timeline cards so users can inspect duration, summaries, and failed stage reasons without scanning raw trace only
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, and marks current response as `full` or `stage-rerun`
 - Pipeline returns unified `taskResult` payload even when executor stage fails
