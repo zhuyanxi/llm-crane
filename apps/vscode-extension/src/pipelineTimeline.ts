@@ -168,7 +168,9 @@ function buildStageSummary(stage: PipelineStageState): string {
     case 'reasoner':
       return `${output.summary} · needReasoning=${output.needReasoning} · evidence=${output.keyEvidenceCount}`;
     case 'verifier':
-      return `${output.verificationStatus} · ${output.detail}`;
+      return output.result
+        ? `${output.result.verdict} · action=${output.result.suggestedAction} · ${output.detail}`
+        : output.detail;
     case 'executor':
       return `${output.status} · ${output.providerId}/${output.modelId}${output.latencyMs !== undefined ? ` · ${output.latencyMs} ms` : ''}`;
     case 'response':

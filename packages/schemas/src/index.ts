@@ -479,6 +479,29 @@ export const ReasonerResultSchema = z.object({
   fallbackReason: z.string().min(1).optional(),
 });
 
+export const VerificationVerdictSchema = z.enum(['pass', 'fail', 'warning']);
+
+export const VerificationSuggestedActionSchema = z.enum(['proceed', 'retry', 'upgrade-model', 'manual-confirm']);
+
+export const VerificationKindSchema = z.enum(['model', 'rule']);
+
+export const VerificationFindingSchema = z.object({
+  code: z.string().min(1),
+  summary: z.string().min(1),
+  detail: z.string().min(1),
+  severity: VerificationVerdictSchema,
+});
+
+export const VerificationResultSchema = z.object({
+  verifierId: z.string().min(1),
+  verifierKind: VerificationKindSchema,
+  verdict: VerificationVerdictSchema,
+  summary: z.string().min(1),
+  reasons: z.array(z.string().min(1)).default([]),
+  suggestedAction: VerificationSuggestedActionSchema,
+  findings: z.array(VerificationFindingSchema).default([]),
+});
+
 export const TaskRequestSchema = z.object({
   task: z.string().min(1),
   taskType: z.string().min(1).optional(),
@@ -627,8 +650,8 @@ export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
   z.object({
     stageId: z.literal('verifier'),
     status: z.enum(['completed', 'skipped']),
-    verificationStatus: z.enum(['not-run', 'passed', 'failed']),
     detail: z.string().min(1),
+    result: VerificationResultSchema.optional(),
   }),
   z.object({
     stageId: z.literal('executor'),
@@ -695,6 +718,7 @@ export const PipelineCheckpointSchema = z.object({
   routeDecision: RouteDecisionSchema.optional(),
   plannerResult: PlannerResultSchema.optional(),
   reasonerResult: ReasonerResultSchema.optional(),
+  verifierResult: VerificationResultSchema.optional(),
   pipeline: PipelineStateSchema,
   trace: z.array(PipelineTraceEventSchema),
   capturedAt: z.string().datetime(),
@@ -711,6 +735,7 @@ export const TaskResponseSchema = z.object({
   routeDecision: RouteDecisionSchema,
   plannerResult: PlannerResultSchema.optional(),
   reasonerResult: ReasonerResultSchema.optional(),
+  verifierResult: VerificationResultSchema.optional(),
   selectedProvider: ProviderSelectionSchema,
   providerResult: ProviderExecutionResultSchema,
   costEstimate: CostEstimateSchema,
@@ -832,6 +857,11 @@ export type ReasonerDecisionSource = z.infer<typeof ReasonerDecisionSourceSchema
 export type ReasonerInput = z.infer<typeof ReasonerInputSchema>;
 export type ReasonerResultStatus = z.infer<typeof ReasonerResultStatusSchema>;
 export type ReasonerResult = z.infer<typeof ReasonerResultSchema>;
+export type VerificationVerdict = z.infer<typeof VerificationVerdictSchema>;
+export type VerificationSuggestedAction = z.infer<typeof VerificationSuggestedActionSchema>;
+export type VerificationKind = z.infer<typeof VerificationKindSchema>;
+export type VerificationFinding = z.infer<typeof VerificationFindingSchema>;
+export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 export type TaskRequest = z.infer<typeof TaskRequestSchema>;
 export type PipelineExecutionState = z.infer<typeof PipelineExecutionStateSchema>;
 export type PipelineGraph = z.infer<typeof PipelineGraphSchema>;

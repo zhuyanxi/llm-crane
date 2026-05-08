@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILT_IN_TASK_TEMPLATES, OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema } from '../src/index';
+import { BUILT_IN_TASK_TEMPLATES, OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema, VerificationResultSchema } from '../src/index';
 
 describe('TaskRequestSchema', () => {
   it('parses minimal task request', () => {
@@ -51,6 +51,30 @@ describe('TaskRequestSchema', () => {
     }
 
     expect(parsed.policyOverrides.modelOverride.modelId).toBe('claude-3-5-sonnet-latest');
+  });
+
+  it('parses shared verification result metadata', () => {
+    const parsed = VerificationResultSchema.parse({
+      verifierId: 'model-consistency-v1',
+      verifierKind: 'model',
+      verdict: 'warning',
+      summary: 'Verifier found missing constraint coverage.',
+      reasons: ['Response skipped one explicit formatting constraint.'],
+      suggestedAction: 'manual-confirm',
+      findings: [
+        {
+          code: 'constraint_missing',
+          summary: 'Constraint missing',
+          detail: 'Output omitted required bullet formatting.',
+          severity: 'warning',
+        },
+      ],
+    });
+
+    expect(parsed.verifierKind).toBe('model');
+    expect(parsed.verdict).toBe('warning');
+    expect(parsed.suggestedAction).toBe('manual-confirm');
+    expect(parsed.findings[0]?.code).toBe('constraint_missing');
   });
 
   it('adds default context priority metadata when contexts are provided', () => {

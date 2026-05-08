@@ -23,6 +23,7 @@ import {
   type StructurizerResult,
   type TaskRequest,
   type TaskResponse,
+  type VerificationResult,
 } from '@llm-crane/schemas';
 import {
   createExecutorStageInput,
@@ -62,6 +63,7 @@ import {
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 import { createTaskCheckpoint } from './taskCheckpoint';
+import { createDeferredVerificationResult } from './verifier';
 
 type PipelineRunnerDependencies = {
   createTimestamp?: () => string;
@@ -316,15 +318,22 @@ function annotateVerifierSkip(
   routeDecision: RouteDecision,
   plannerResult: PlannerResult,
   reasonerResult: ReasonerResult,
-): void {
+): VerificationResult {
   if (routeDecision.route !== 'complex') {
-    return;
+    throw new Error('Verifier skip annotation only applies to complex route.');
   }
 
   const verifierDetail = reasonerResult.needReasoning
     ? 'Verifier stage not enabled in V1-S03; reasoner summary remains available for future verifier checks.'
     : 'Verifier stage not enabled in V1-S03; task exited reasoner early and proceeds directly to execution.';
-  pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail), {
+  const verifierResult = createDeferredVerificationResult(
+    'Verifier deferred until dedicated verifier strategies land.',
+    [verifierDetail],
+  );
+  pipelineMachine.updateContext({
+    verifierResult,
+  });
+  pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail, verifierResult), {
     input: createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
   });
   trace.add('verifier.finish', 'skipped', verifierDetail, {
@@ -335,8 +344,11 @@ function annotateVerifierSkip(
       planStepCount: plannerResult.steps.length,
       reasonerStatus: reasonerResult.status,
       needReasoning: reasonerResult.needReasoning,
+      verifierVerdict: verifierResult.verdict,
+      suggestedAction: verifierResult.suggestedAction,
     }),
   });
+  return verifierResult;
 }
 
 export async function runTaskPipeline(
@@ -564,6 +576,7 @@ export async function runTaskPipeline(
 
   let plannerResult: PlannerResult | undefined;
   let reasonerResult: ReasonerResult | undefined;
+  let verifierResult: VerificationResult | undefined;
 
   if (routeDecision.route === 'complex') {
     if (shouldReuseCheckpointStage(runMode, 'planner')) {
@@ -830,13 +843,19 @@ export async function runTaskPipeline(
 
     if (reasonerResult) {
       if (shouldReuseCheckpointStage(runMode, 'verifier')) {
+        verifierResult = rerunRequest?.checkpoint.verifierResult;
         reusedCheckpointStages.push('verifier');
         const verifierDetail = createCheckpointReuseDetail('verifier');
         const verifierCheckpointStage = getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'verifier');
+        if (verifierResult) {
+          pipelineMachine.updateContext({
+            verifierResult,
+          });
+        }
         pipelineMachine.skipStage(
           'verifier',
           verifierDetail,
-          verifierCheckpointStage?.output ?? createVerifierStageOutput('skipped', verifierDetail),
+          verifierCheckpointStage?.output ?? createVerifierStageOutput('skipped', verifierDetail, verifierResult),
           {
             input:
               verifierCheckpointStage?.input ??
@@ -847,10 +866,12 @@ export async function runTaskPipeline(
           metadata: compactMetadata({
             route: routeDecision.route,
             targetStageId: rerunRequest?.targetStageId,
+            verifierVerdict: verifierResult?.verdict,
+            suggestedAction: verifierResult?.suggestedAction,
           }),
         });
       } else {
-        annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
+        verifierResult = annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
       }
     }
   }
@@ -1098,6 +1119,7 @@ export async function runTaskPipeline(
     routeDecision,
     plannerResult,
     reasonerResult,
+    verifierResult,
     pipeline,
     trace: traceEntries,
     capturedAt: dependencies.createTimestamp(),
@@ -1119,6 +1141,7 @@ export async function runTaskPipeline(
     routeDecision,
     plannerResult,
     reasonerResult,
+    verifierResult,
     selectedProvider: {
       providerId: providerResult.providerId,
       runtimeId: providerTarget.runtimeId,

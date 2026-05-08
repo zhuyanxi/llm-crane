@@ -12,6 +12,7 @@ import {
   createVerifierStageInput,
   createVerifierStageOutput,
 } from '../src/pipelineStateMachine';
+import { createDeferredVerificationResult } from '../src/verifier';
 
 const baseTaskRequest: TaskRequest = {
   task: 'Review current file for stage transitions.',
@@ -88,7 +89,8 @@ describe('PipelineStateMachine', () => {
     machine.startStage('request', createRequestStageInput(baseTaskRequest));
     machine.completeStage('request', createRequestStageOutput());
     machine.setGraph('complex');
-    machine.skipStage('verifier', 'Verifier intentionally skipped for graph test.', createVerifierStageOutput('skipped', 'Verifier skipped.'), {
+    const verifierResult = createDeferredVerificationResult('Verifier deferred for graph test.', ['Manual review still required.']);
+    machine.skipStage('verifier', 'Verifier intentionally skipped for graph test.', createVerifierStageOutput('skipped', 'Verifier skipped.', verifierResult), {
       input: createVerifierStageInput(
         {
           status: 'routed',
@@ -110,6 +112,11 @@ describe('PipelineStateMachine', () => {
     expect(serialized.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('pending');
     expect(serialized.stages.find((stage) => stage.stageId === 'executor')?.dependsOn).toEqual(['verifier']);
     expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
+    expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId).toBe('verifier');
+    if (serialized.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId !== 'verifier') {
+      throw new Error('Expected verifier stage output');
+    }
+    expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.output.result?.suggestedAction).toBe('manual-confirm');
   });
 
   it('rejects invalid terminal transition', () => {

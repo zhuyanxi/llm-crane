@@ -140,4 +140,44 @@ describe('buildPipelineTimeline', () => {
     expect(timeline[1].summary).toBe('Response skipped after executor failure.');
     expect(timeline[1].detail).toContain('Response skipped after executor failure.');
   });
+
+  it('shows verifier verdict and suggested action in timeline summary', () => {
+    const timeline = buildPipelineTimeline({
+      pipeline: {
+        version: 'v1',
+        graph: 'complex-v1',
+        route: 'complex',
+        state: 'completed',
+        stages: [
+          {
+            stageId: 'verifier',
+            label: 'Verifier',
+            state: 'skipped',
+            dependsOn: ['reasoner'],
+            startedAt: '2026-05-08T10:00:00.100Z',
+            completedAt: '2026-05-08T10:00:00.120Z',
+            skippedReason: 'Verifier deferred until dedicated strategies land.',
+            output: {
+              stageId: 'verifier',
+              status: 'skipped',
+              detail: 'Verifier deferred until dedicated strategies land.',
+              result: {
+                verifierId: 'deferred-verifier',
+                verifierKind: 'model',
+                verdict: 'warning',
+                summary: 'Verifier deferred.',
+                reasons: ['No low-cost verifier ran for this response.'],
+                suggestedAction: 'manual-confirm',
+                findings: [],
+              },
+            },
+          },
+        ],
+        transitions: [],
+      },
+      trace: [],
+    } satisfies Pick<TaskResponse, 'pipeline' | 'trace'>);
+
+    expect(timeline[0]?.summary).toBe('warning · action=manual-confirm · Verifier deferred until dedicated strategies land.');
+  });
 });

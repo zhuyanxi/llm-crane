@@ -23,6 +23,7 @@ import type {
   StructurizerResult,
   TaskRequest,
   TaskResponse,
+  VerificationResult,
 } from '@llm-crane/schemas';
 
 type CreateTimestamp = () => string;
@@ -41,6 +42,7 @@ export type PipelineExecutionContext = {
   routeDecision?: RouteDecision;
   plannerResult?: PlannerResult;
   reasonerResult?: ReasonerResult;
+  verifierResult?: VerificationResult;
   providerTarget?: ProviderTargetSnapshot;
   providerResult?: ProviderExecutionResult;
   costEstimate?: CostEstimate;
@@ -161,7 +163,7 @@ function assertTransitionAllowed(stage: PipelineStageState, nextState: PipelineE
 
 type CachedPipelineResponse = Pick<
   TaskResponse,
-  'output' | 'routeDecision' | 'plannerResult' | 'reasonerResult' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
+  'output' | 'routeDecision' | 'plannerResult' | 'reasonerResult' | 'verifierResult' | 'selectedProvider' | 'providerResult' | 'costEstimate' | 'diagnostic'
 >;
 
 export class PipelineStateMachine {
@@ -495,13 +497,13 @@ export function createVerifierStageInput(
 export function createVerifierStageOutput(
   status: 'completed' | 'skipped',
   detail: string,
-  verificationStatus: 'not-run' | 'passed' | 'failed' = 'not-run',
+  result?: VerificationResult,
 ): PipelineStageOutput {
   return {
     stageId: 'verifier',
     status,
-    verificationStatus,
     detail,
+    result,
   };
 }
 
@@ -627,6 +629,7 @@ export function buildCachedPipelineState(
     routeDecision: cachedResponse.routeDecision,
     plannerResult,
     reasonerResult: cachedResponse.reasonerResult,
+    verifierResult: cachedResponse.verifierResult,
     providerTarget: {
       providerId: cachedResponse.selectedProvider.providerId,
       modelId: cachedResponse.selectedProvider.modelId,
@@ -706,7 +709,7 @@ export function buildCachedPipelineState(
     machine.skipStage(
       'verifier',
       'Cache hit; reused complex graph state without rerunning verifier.',
-      createVerifierStageOutput('skipped', 'Cache hit reused verifier checkpoint.'),
+      createVerifierStageOutput('skipped', 'Cache hit reused verifier checkpoint.', cachedResponse.verifierResult),
       {
         input: createVerifierStageInput(
           cachedResponse.routeDecision,

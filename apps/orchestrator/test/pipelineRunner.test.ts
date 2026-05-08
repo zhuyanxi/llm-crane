@@ -127,14 +127,18 @@ describe('runTaskPipeline', () => {
     expect(response.reasonerResult?.status).toBe('reasoned');
     expect(response.reasonerResult?.needReasoning).toBe(true);
     expect(response.reasonerResult?.summary).toContain('Escalate reasoning');
+    expect(response.verifierResult?.verdict).toBe('warning');
+    expect(response.verifierResult?.suggestedAction).toBe('manual-confirm');
     expect(response.pipeline.graph).toBe('complex-v1');
     expect(response.pipeline.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId).toBe('verifier');
     expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'verifier.finish' && event.metadata.verifierVerdict === 'warning')).toBe(true);
   });
 
   it('honors manual complex-default override on simple route and records override trace', async () => {

@@ -17,6 +17,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
+- Complex-path verifier stage now uses structured verifier result model with verdict, reasons, and suggested action, even when current implementation still emits deferred warning placeholder.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -65,6 +66,7 @@ Run inside VS Code:
 - Recent session history cards for comparing old runs by route, model, cache outcome, rerun source, and manual override tag
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
+- Verifier stage summary with verdict and suggested next action when verifier outcome exists
 - Routing summary with route status, confidence, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
 - Planner status, ordered steps, and planner trace entries for complex tasks
 - Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
@@ -220,6 +222,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks
 - `taskResult.reasonerResult` carries `needReasoning`, decision source, early-exit or escalation summary, and key evidence for downstream executor/UI use
+- `taskResult.verifierResult` now carries shared verification verdict, reasons, suggested action, and findings for future model or rule verifiers
 - `taskResult.checkpoint` carries resumable task request, pipeline state, and trace history for stage rerun API
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`

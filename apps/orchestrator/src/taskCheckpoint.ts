@@ -1,4 +1,4 @@
-import { PipelineCheckpointSchema, type PipelineCheckpoint, type PlannerResult, type ReasonerResult, type RouteDecision, type StructurizerResult, type TaskRequest, type PipelineState, type PipelineTraceEvent } from '@llm-crane/schemas';
+import { PipelineCheckpointSchema, type PipelineCheckpoint, type PipelineState, type PipelineTraceEvent, type PlannerResult, type ReasonerResult, type RouteDecision, type StructurizerResult, type TaskRequest, type VerificationResult } from '@llm-crane/schemas';
 
 type CreateTaskCheckpointInput = {
   taskRequest: TaskRequest;
@@ -9,6 +9,7 @@ type CreateTaskCheckpointInput = {
   routeDecision?: RouteDecision;
   plannerResult?: PlannerResult;
   reasonerResult?: ReasonerResult;
+  verifierResult?: VerificationResult;
 };
 
 export function createTaskCheckpoint(input: CreateTaskCheckpointInput): PipelineCheckpoint {
@@ -18,6 +19,7 @@ export function createTaskCheckpoint(input: CreateTaskCheckpointInput): Pipeline
     routeDecision: input.routeDecision,
     plannerResult: input.plannerResult,
     reasonerResult: input.reasonerResult,
+    verifierResult: input.verifierResult,
     pipeline: input.pipeline,
     trace: input.trace,
     capturedAt: input.capturedAt,
