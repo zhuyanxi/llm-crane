@@ -18,6 +18,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
+- Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
 - Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline, while keeping latest checkpointed manual override state.
@@ -61,6 +62,7 @@ Run inside VS Code:
 - Validated TaskRequest preview including selected task template and template inputs when present
 - Selected provider/model
 - Request and response summaries showing automatic routing versus manual model override
+- Recent session history cards for comparing old runs by route, model, cache outcome, rerun source, and manual override tag
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
 - Routing summary with route status, confidence, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
@@ -210,6 +212,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template
 - VS Code task panel now aggregates pipeline state plus stage trace into timeline cards so users can inspect duration, summaries, and failed stage reasons without scanning raw trace only
 - VS Code task panel now surfaces router confidence, `routeReason`, override source, and manual model override controls with configured-model validation
+- VS Code task panel now keeps bounded session history and lets user switch displayed result, request preview, and trace without overwriting composer inputs
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, keeps checkpointed override state, and marks current response as `full` or `stage-rerun`
 - Manual model override now records `policy.override` trace entries and updates selected-provider reasoning in result summaries

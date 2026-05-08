@@ -31,6 +31,7 @@ import {
   loadModelOverrideCatalog,
   type ModelOverrideMode,
 } from './modelOverride';
+import { buildTaskHistoryEntryView, type TaskHistoryEntryView } from './taskHistory';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -60,7 +61,16 @@ type RerunTaskPanelInboundMessage = {
   targetStageId: RerunnableStageId;
 };
 
-type TaskPanelInboundMessage = SubmitTaskPanelInboundMessage | PreviewContextPanelInboundMessage | RerunTaskPanelInboundMessage;
+type SelectHistoryEntryPanelInboundMessage = {
+  type: 'selectHistoryEntry';
+  historyId: string;
+};
+
+type TaskPanelInboundMessage =
+  | SubmitTaskPanelInboundMessage
+  | PreviewContextPanelInboundMessage
+  | RerunTaskPanelInboundMessage
+  | SelectHistoryEntryPanelInboundMessage;
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -92,9 +102,27 @@ type TaskResultView = {
   traceEntries: string[];
 };
 
+type TaskHistoryListEntryView = TaskHistoryEntryView & {
+  isActive: boolean;
+};
+
+type TaskHistoryRecord = {
+  id: string;
+  status: TaskPanelStatus;
+  headline: string;
+  detail: string;
+  submittedTask: string;
+  requestPreview: string;
+  response: TaskResponse;
+  resultView: TaskResultView;
+};
+
 type TaskPanelSession = {
   latestResponse?: TaskResponse;
   latestSubmittedTask?: string;
+  history: TaskHistoryRecord[];
+  activeHistoryId?: string;
+  nextHistoryId: number;
 };
 
 type TaskPanelStatusMessage = {
@@ -105,6 +133,7 @@ type TaskPanelStatusMessage = {
   submittedTask?: string;
   requestPreview?: string;
   resultView?: TaskResultView;
+  historyEntries?: TaskHistoryListEntryView[];
 };
 
 type ContextPreviewItemView = {
@@ -123,6 +152,7 @@ type ContextPreviewMessage = {
 };
 
 let orchestratorManager: OrchestratorProcessManager | undefined;
+const MAX_TASK_HISTORY_ENTRIES = 6;
 
 export function activate(context: vscode.ExtensionContext): void {
   orchestratorManager = new OrchestratorProcessManager(context.extensionUri.fsPath, context.globalStorageUri.fsPath);
@@ -136,7 +166,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const panel = createTaskPanel();
     taskPanel = panel;
-    const panelSession: TaskPanelSession = {};
+    const panelSession: TaskPanelSession = {
+      history: [],
+      nextHistoryId: 1,
+    };
 
     panel.webview.html = getTaskPanelHtml(panel.webview);
     postTaskStatus(panel.webview, {
@@ -197,10 +230,36 @@ async function handleTaskPanelMessage(
     return;
   }
 
+  if (isSelectHistoryEntryPanelInboundMessage(message)) {
+    const historyRecord = selectTaskHistoryRecord(panelSession, message.historyId);
+    if (!historyRecord) {
+      const activeHistoryRecord = getActiveTaskHistoryRecord(panelSession);
+      postTaskStatusWithHistory(webview, panelSession, {
+        status: 'error',
+        headline: 'History entry unavailable',
+        detail: 'Selected session history record no longer exists.',
+        submittedTask: activeHistoryRecord?.submittedTask,
+        requestPreview: activeHistoryRecord?.requestPreview,
+        resultView: activeHistoryRecord?.resultView,
+      });
+      return;
+    }
+
+    postTaskStatusWithHistory(webview, panelSession, {
+      status: historyRecord.status,
+      headline: historyRecord.headline,
+      detail: historyRecord.detail,
+      submittedTask: historyRecord.submittedTask,
+      requestPreview: historyRecord.requestPreview,
+      resultView: historyRecord.resultView,
+    });
+    return;
+  }
+
   if (isSubmitTaskPanelInboundMessage(message)) {
     const taskDraft = buildTaskDraftPreview(message.value, message.templateId, message.templateValues);
     if (!taskDraft) {
-      postTaskStatus(webview, {
+      postTaskStatusWithHistory(webview, panelSession, {
         status: 'error',
         headline: 'Task description required',
         detail: 'Enter task text or choose a template with the required inputs before submitting.',
@@ -208,7 +267,7 @@ async function handleTaskPanelMessage(
       return;
     }
 
-    postTaskStatus(webview, {
+    postTaskStatusWithHistory(webview, panelSession, {
       status: 'running',
       headline: 'Submitting task',
       detail: `Collecting ${getContextModeLabel(message.contextMode).toLowerCase()} context, then starting or reusing local orchestrator process${message.ignoreCache ? ' with cache bypass enabled' : ''}.`,
@@ -229,20 +288,33 @@ async function handleTaskPanelMessage(
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
       const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
 
-      panelSession.latestResponse = response;
-      panelSession.latestSubmittedTask = taskRequest.task;
-
-      postTaskStatus(webview, {
-        status: hasFailureDiagnostic ? 'error' : 'success',
-        headline: hasFailureDiagnostic
+      const status: TaskPanelStatus = hasFailureDiagnostic ? 'error' : 'success';
+      const headline = hasFailureDiagnostic
           ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
           : readyMode === 'started'
             ? 'Orchestrator started and responded'
-            : 'Orchestrator response received',
-        detail: `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`,
+            : 'Orchestrator response received';
+      const detail = `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`;
+      const requestPreview = JSON.stringify(taskRequest, null, 2);
+      const historyRecord = createTaskHistoryRecord(
+        panelSession,
+        status,
+        headline,
+        detail,
+        taskRequest.task,
+        requestPreview,
+        response,
+      );
+
+      appendTaskHistoryRecord(panelSession, historyRecord);
+
+      postTaskStatusWithHistory(webview, panelSession, {
+        status,
+        headline,
+        detail,
         submittedTask: taskRequest.task,
-        requestPreview: JSON.stringify(taskRequest, null, 2),
-        resultView: createTaskResultView(response),
+        requestPreview,
+        resultView: historyRecord.resultView,
       });
     } catch (error) {
       const headline = error instanceof LLMCraneDiagnosticError ? error.diagnostic.summary : 'Submission blocked';
@@ -253,7 +325,7 @@ async function handleTaskPanelMessage(
             ? error.message
             : 'Unexpected LLM Crane error.';
 
-      postTaskStatus(webview, {
+      postTaskStatusWithHistory(webview, panelSession, {
         status: 'error',
         headline,
         detail,
@@ -267,8 +339,10 @@ async function handleTaskPanelMessage(
     return;
   }
 
-  if (!panelSession.latestResponse) {
-    postTaskStatus(webview, {
+  const activeHistoryRecord = getActiveTaskHistoryRecord(panelSession);
+
+  if (!activeHistoryRecord) {
+    postTaskStatusWithHistory(webview, panelSession, {
       status: 'error',
       headline: 'No checkpoint available',
       detail: 'Run task once before stage rerun.',
@@ -276,23 +350,24 @@ async function handleTaskPanelMessage(
     return;
   }
 
-  const submittedTask = panelSession.latestSubmittedTask ?? panelSession.latestResponse.checkpoint.taskRequest.task;
+  const submittedTask = activeHistoryRecord.submittedTask;
   let rerunRequest: RerunTaskRequest;
 
   try {
-    rerunRequest = buildRerunTaskRequest(panelSession.latestResponse, message.targetStageId);
+    rerunRequest = buildRerunTaskRequest(activeHistoryRecord.response, message.targetStageId);
   } catch (error) {
-    postTaskStatus(webview, {
+    postTaskStatusWithHistory(webview, panelSession, {
       status: 'error',
       headline: 'Stage rerun blocked',
       detail: error instanceof Error ? error.message : 'Invalid stage rerun request.',
       submittedTask,
-      resultView: createTaskResultView(panelSession.latestResponse),
+      requestPreview: activeHistoryRecord.requestPreview,
+      resultView: activeHistoryRecord.resultView,
     });
     return;
   }
 
-  postTaskStatus(webview, {
+  postTaskStatusWithHistory(webview, panelSession, {
     status: 'running',
     headline: 'Starting stage rerun',
     detail: `Reusing checkpointed pipeline context and resuming from ${message.targetStageId}.`,
@@ -303,20 +378,33 @@ async function handleTaskPanelMessage(
     const { response, readyMode, processId } = await processManager.rerunTask(rerunRequest);
     const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
 
-    panelSession.latestResponse = response;
-    panelSession.latestSubmittedTask = submittedTask;
-
-    postTaskStatus(webview, {
-      status: hasFailureDiagnostic ? 'error' : 'success',
-      headline: hasFailureDiagnostic
+    const status: TaskPanelStatus = hasFailureDiagnostic ? 'error' : 'success';
+    const headline = hasFailureDiagnostic
         ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
         : readyMode === 'started'
           ? 'Orchestrator started and responded'
-          : 'Orchestrator response received',
-      detail: `${formatTaskResponseSummary(response, readyMode, processId)} Retained ${response.runInfo.historyTraceCount} prior trace event(s).`,
+          : 'Orchestrator response received';
+    const detail = `${formatTaskResponseSummary(response, readyMode, processId)} Retained ${response.runInfo.historyTraceCount} prior trace event(s).`;
+    const requestPreview = JSON.stringify(rerunRequest, null, 2);
+    const historyRecord = createTaskHistoryRecord(
+      panelSession,
+      status,
+      headline,
+      detail,
       submittedTask,
-      requestPreview: JSON.stringify(rerunRequest, null, 2),
-      resultView: createTaskResultView(response),
+      requestPreview,
+      response,
+    );
+
+    appendTaskHistoryRecord(panelSession, historyRecord);
+
+    postTaskStatusWithHistory(webview, panelSession, {
+      status,
+      headline,
+      detail,
+      submittedTask,
+      requestPreview,
+      resultView: historyRecord.resultView,
     });
   } catch (error) {
     const headline = error instanceof LLMCraneDiagnosticError ? error.diagnostic.summary : 'Submission blocked';
@@ -327,12 +415,13 @@ async function handleTaskPanelMessage(
           ? error.message
           : 'Unexpected LLM Crane error.';
 
-    postTaskStatus(webview, {
+    postTaskStatusWithHistory(webview, panelSession, {
       status: 'error',
       headline,
       detail,
       submittedTask,
-      resultView: createTaskResultView(panelSession.latestResponse),
+      requestPreview: activeHistoryRecord.requestPreview,
+      resultView: activeHistoryRecord.resultView,
     });
   }
 }
@@ -384,6 +473,15 @@ function isRerunTaskPanelInboundMessage(message: unknown): message is RerunTaskP
 
   const candidate = message as Partial<RerunTaskPanelInboundMessage>;
   return candidate.type === 'rerunTask' && typeof candidate.targetStageId === 'string' && isRerunnableStageId(candidate.targetStageId);
+}
+
+function isSelectHistoryEntryPanelInboundMessage(message: unknown): message is SelectHistoryEntryPanelInboundMessage {
+  if (typeof message !== 'object' || message === null) {
+    return false;
+  }
+
+  const candidate = message as Partial<SelectHistoryEntryPanelInboundMessage>;
+  return candidate.type === 'selectHistoryEntry' && typeof candidate.historyId === 'string' && candidate.historyId.length > 0;
 }
 
 function isRerunnableStageId(value: string): value is RerunnableStageId {
@@ -870,6 +968,65 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   };
 }
 
+function createTaskHistoryRecord(
+  panelSession: TaskPanelSession,
+  status: TaskPanelStatus,
+  headline: string,
+  detail: string,
+  submittedTask: string,
+  requestPreview: string,
+  response: TaskResponse,
+): TaskHistoryRecord {
+  const id = `run-${panelSession.nextHistoryId}`;
+  panelSession.nextHistoryId += 1;
+
+  return {
+    id,
+    status,
+    headline,
+    detail,
+    submittedTask,
+    requestPreview,
+    response,
+    resultView: createTaskResultView(response),
+  };
+}
+
+function appendTaskHistoryRecord(panelSession: TaskPanelSession, historyRecord: TaskHistoryRecord): void {
+  panelSession.history = [historyRecord, ...panelSession.history].slice(0, MAX_TASK_HISTORY_ENTRIES);
+  panelSession.activeHistoryId = historyRecord.id;
+  panelSession.latestResponse = historyRecord.response;
+  panelSession.latestSubmittedTask = historyRecord.submittedTask;
+}
+
+function getActiveTaskHistoryRecord(panelSession: TaskPanelSession): TaskHistoryRecord | undefined {
+  if (panelSession.activeHistoryId) {
+    const activeRecord = panelSession.history.find((historyRecord) => historyRecord.id === panelSession.activeHistoryId);
+    if (activeRecord) {
+      return activeRecord;
+    }
+  }
+
+  return panelSession.history[0];
+}
+
+function selectTaskHistoryRecord(panelSession: TaskPanelSession, historyId: string): TaskHistoryRecord | undefined {
+  const historyRecord = panelSession.history.find((entry) => entry.id === historyId);
+  if (!historyRecord) {
+    return undefined;
+  }
+
+  panelSession.activeHistoryId = historyRecord.id;
+  return historyRecord;
+}
+
+function getTaskHistoryListEntries(panelSession: TaskPanelSession): TaskHistoryListEntryView[] {
+  return panelSession.history.map((historyRecord) => ({
+    ...buildTaskHistoryEntryView(historyRecord.id, historyRecord.submittedTask, historyRecord.response),
+    isActive: historyRecord.id === panelSession.activeHistoryId,
+  }));
+}
+
 function formatTokenCount(value: number | undefined): string {
   return value === undefined ? '?' : value.toLocaleString('en-US');
 }
@@ -948,6 +1105,20 @@ function postTaskStatus(webview: vscode.Webview, message: Omit<TaskPanelStatusMe
   void webview.postMessage({
     type: 'taskStatus',
     ...message,
+  });
+}
+
+function postTaskStatusWithHistory(
+  webview: vscode.Webview,
+  panelSession: TaskPanelSession,
+  message: Omit<TaskPanelStatusMessage, 'type' | 'historyEntries'>,
+): void {
+  const activeHistoryRecord = getActiveTaskHistoryRecord(panelSession);
+
+  postTaskStatus(webview, {
+    ...message,
+    resultView: message.resultView ?? activeHistoryRecord?.resultView,
+    historyEntries: getTaskHistoryListEntries(panelSession),
   });
 }
 
@@ -1368,6 +1539,75 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         line-height: 1.5;
       }
 
+      .history-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .history-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .history-card {
+        width: 100%;
+        display: grid;
+        gap: 8px;
+        text-align: left;
+        padding: 12px;
+        border: 1px solid var(--vscode-panel-border);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-panel-border));
+        color: var(--vscode-foreground);
+      }
+
+      .history-card:hover {
+        background: color-mix(in srgb, var(--vscode-editor-background) 84%, var(--vscode-list-hoverBackground));
+      }
+
+      .history-card-active {
+        border-color: var(--vscode-focusBorder);
+        box-shadow: inset 0 0 0 1px var(--vscode-focusBorder);
+      }
+
+      .history-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .history-card-title,
+      .history-card-summary,
+      .history-card-detail {
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      .history-card-detail {
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .history-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .history-tag {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: var(--vscode-badge-background);
+        color: var(--vscode-badge-foreground);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
       .usage {
         display: grid;
         gap: 8px;
@@ -1506,6 +1746,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         </div>
       </section>
 
+      <section class="result-panel" id="history-panel" hidden>
+        <div class="history-panel-header">
+          <h2>Recent runs</h2>
+          <span class="hint" id="history-panel-hint">Session history. Switching record does not change current inputs.</span>
+        </div>
+        <div class="history-list" id="history-list"></div>
+      </section>
+
       <section class="result-panel" id="result-panel" hidden>
         <div class="result-header">
           <h2>Latest result</h2>
@@ -1641,6 +1889,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const submittedTask = document.getElementById('submitted-task');
       const requestPreviewBlock = document.getElementById('request-preview-block');
       const requestPreview = document.getElementById('request-preview');
+      const historyPanel = document.getElementById('history-panel');
+      const historyPanelHint = document.getElementById('history-panel-hint');
+      const historyList = document.getElementById('history-list');
       const resultPanel = document.getElementById('result-panel');
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
@@ -1975,11 +2226,69 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         );
       }
 
-      function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
+      function renderHistoryEntries(historyEntries) {
+        if (!historyEntries || historyEntries.length === 0) {
+          historyPanel.hidden = true;
+          historyList.replaceChildren();
+          return;
+        }
+
+        historyPanel.hidden = false;
+        historyPanelHint.textContent = 'Session history. Click record to view summary, request, and trace without touching current inputs.';
+        historyList.replaceChildren(
+          ...historyEntries.map((entry) => {
+            const card = document.createElement('button');
+            card.type = 'button';
+            card.className = entry.isActive ? 'history-card history-card-active' : 'history-card';
+            card.dataset.historyId = entry.id;
+
+            const header = document.createElement('div');
+            header.className = 'history-card-header';
+
+            const title = document.createElement('strong');
+            title.className = 'history-card-title';
+            title.textContent = entry.title;
+            header.appendChild(title);
+
+            const capturedAt = document.createElement('span');
+            capturedAt.className = 'hint';
+            capturedAt.textContent = entry.capturedAt;
+            header.appendChild(capturedAt);
+
+            const summary = document.createElement('p');
+            summary.className = 'history-card-summary';
+            summary.textContent = entry.summary;
+
+            const detail = document.createElement('p');
+            detail.className = 'history-card-detail';
+            detail.textContent = entry.detail;
+
+            const tags = document.createElement('div');
+            tags.className = 'history-tags';
+            tags.replaceChildren(
+              ...entry.tags.map((tag) => {
+                const badge = document.createElement('span');
+                badge.className = 'history-tag';
+                badge.textContent = tag;
+                return badge;
+              }),
+            );
+
+            card.append(header, summary, detail, tags);
+            card.addEventListener('click', () => {
+              vscode.postMessage({ type: 'selectHistoryEntry', historyId: entry.id });
+            });
+            return card;
+          }),
+        );
+      }
+
+      function setStatus(status, headline, detail, taskText, payloadPreview, resultView, historyEntries) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
         statusHeadline.textContent = headline;
         statusDetail.textContent = detail;
+        renderHistoryEntries(historyEntries);
 
         if (taskText && taskText.trim()) {
           taskPreviewBlock.hidden = false;
@@ -2155,13 +2464,21 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
       renderTemplateFields();
       syncContextControls(true);
-  syncModelOverrideControls();
+      syncModelOverrideControls();
       requestContextPreview();
 
       window.addEventListener('message', (event) => {
         const message = event.data;
         if (message?.type === 'taskStatus') {
-          setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview, message.resultView);
+          setStatus(
+            message.status,
+            message.headline,
+            message.detail,
+            message.submittedTask,
+            message.requestPreview,
+            message.resultView,
+            message.historyEntries,
+          );
           return;
         }
 
