@@ -63,7 +63,7 @@ import {
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 import { createTaskCheckpoint } from './taskCheckpoint';
-import { createDeferredVerificationResult } from './verifier';
+import { createVerifierFailureResult, verifyTaskWithModel } from './verifier';
 
 type PipelineRunnerDependencies = {
   createTimestamp?: () => string;
@@ -78,6 +78,7 @@ type PipelineRunnerDependencies = {
   createFallbackReasonerResult?: typeof createFallbackReasonerResultBase;
   buildProviderUserPrompt?: typeof buildProviderUserPrompt;
   invokeRoutedProvider?: typeof invokeRoutedProvider;
+  verifyTaskOutput?: typeof verifyTaskWithModel;
 };
 
 type TraceStatus = PipelineTraceEvent['status'];
@@ -105,7 +106,7 @@ type PipelineRunMode =
 
 const FULL_RUN_MODE: PipelineRunMode = { mode: 'full' };
 
-const RERUN_STAGE_ORDER: readonly RerunnableStageId[] = ['structurizer', 'router', 'planner', 'reasoner', 'verifier', 'executor'];
+const RERUN_STAGE_ORDER: readonly RerunnableStageId[] = ['structurizer', 'router', 'planner', 'reasoner', 'executor', 'verifier'];
 
 const SIMPLE_RERUN_TARGETS = new Set<RerunnableStageId>(['structurizer', 'router', 'executor']);
 
@@ -148,6 +149,10 @@ function assertRerunRequestSupported(rerun: RerunTaskRequest): void {
   if (route === 'complex' && shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'reasoner') && !rerun.checkpoint.reasonerResult) {
     throw new Error('Stage rerun requires reasoner checkpoint before selected target stage.');
   }
+
+  if (route === 'complex' && shouldReuseCheckpointStage({ mode: 'stage-rerun', rerun }, 'executor') && !rerun.checkpoint.providerResult) {
+    throw new Error('Stage rerun requires executor checkpoint before selected target stage.');
+  }
 }
 
 function createCheckpointReuseDetail(stageId: RerunnableStageId): string {
@@ -167,6 +172,7 @@ const defaultDependencies: Required<PipelineRunnerDependencies> = {
   createFallbackReasonerResult: createFallbackReasonerResultBase,
   buildProviderUserPrompt,
   invokeRoutedProvider,
+  verifyTaskOutput: verifyTaskWithModel,
 };
 
 function toErrorMessage(error: unknown): string {
@@ -312,38 +318,54 @@ function createReasonerStageError(reasonerResult: ReasonerResult): PipelineTrace
     : undefined;
 }
 
+function createVerifierStageError(verifierResult: VerificationResult): PipelineTraceError | undefined {
+  if (verifierResult.verdict !== 'fail') {
+    return undefined;
+  }
+
+  return {
+    code: verifierResult.findings[0]?.code ?? 'verifier_failed',
+    message: verifierResult.findings[0]?.summary ?? verifierResult.summary,
+  };
+}
+
 function annotateVerifierSkip(
   trace: ReturnType<typeof createTraceCollector>,
   pipelineMachine: ReturnType<typeof createPipelineStateMachine>,
   routeDecision: RouteDecision,
   plannerResult: PlannerResult,
-  reasonerResult: ReasonerResult,
+  providerResult: ProviderExecutionResult,
+  output: string,
+  detail: string,
+  verifierResult: VerificationResult,
 ): VerificationResult {
   if (routeDecision.route !== 'complex') {
     throw new Error('Verifier skip annotation only applies to complex route.');
   }
 
-  const verifierDetail = reasonerResult.needReasoning
-    ? 'Verifier stage not enabled in V1-S03; reasoner summary remains available for future verifier checks.'
-    : 'Verifier stage not enabled in V1-S03; task exited reasoner early and proceeds directly to execution.';
-  const verifierResult = createDeferredVerificationResult(
-    'Verifier deferred until dedicated verifier strategies land.',
-    [verifierDetail],
-  );
   pipelineMachine.updateContext({
     verifierResult,
   });
-  pipelineMachine.skipStage('verifier', verifierDetail, createVerifierStageOutput('skipped', verifierDetail, verifierResult), {
-    input: createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
+  pipelineMachine.skipStage('verifier', detail, createVerifierStageOutput('skipped', detail, verifierResult), {
+    input: createVerifierStageInput(
+      routeDecision,
+      providerResult.status,
+      plannerResult.status,
+      plannerResult.steps.length,
+      pipelineMachine.context.taskRequest.constraints.length,
+      plannerResult.downstreamHints.verifierChecks.length,
+      output.length,
+    ),
   });
-  trace.add('verifier.finish', 'skipped', verifierDetail, {
+  trace.add('verifier.finish', 'skipped', detail, {
     metadata: compactMetadata({
       route: routeDecision.route,
-      providerReady: true,
+      executorStatus: providerResult.status,
       plannerStatus: plannerResult.status,
       planStepCount: plannerResult.steps.length,
-      reasonerStatus: reasonerResult.status,
-      needReasoning: reasonerResult.needReasoning,
+      constraintCount: pipelineMachine.context.taskRequest.constraints.length,
+      verifierCheckCount: plannerResult.downstreamHints.verifierChecks.length,
+      outputChars: output.length,
       verifierVerdict: verifierResult.verdict,
       suggestedAction: verifierResult.suggestedAction,
     }),
@@ -841,43 +863,11 @@ export async function runTaskPipeline(
       }
     }
 
-    if (reasonerResult) {
-      if (shouldReuseCheckpointStage(runMode, 'verifier')) {
-        verifierResult = rerunRequest?.checkpoint.verifierResult;
-        reusedCheckpointStages.push('verifier');
-        const verifierDetail = createCheckpointReuseDetail('verifier');
-        const verifierCheckpointStage = getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'verifier');
-        if (verifierResult) {
-          pipelineMachine.updateContext({
-            verifierResult,
-          });
-        }
-        pipelineMachine.skipStage(
-          'verifier',
-          verifierDetail,
-          verifierCheckpointStage?.output ?? createVerifierStageOutput('skipped', verifierDetail, verifierResult),
-          {
-            input:
-              verifierCheckpointStage?.input ??
-              createVerifierStageInput(routeDecision, true, plannerResult.status, plannerResult.steps.length),
-          },
-        );
-        trace.add('verifier.reuse', 'skipped', verifierDetail, {
-          metadata: compactMetadata({
-            route: routeDecision.route,
-            targetStageId: rerunRequest?.targetStageId,
-            verifierVerdict: verifierResult?.verdict,
-            suggestedAction: verifierResult?.suggestedAction,
-          }),
-        });
-      } else {
-        verifierResult = annotateVerifierSkip(trace, pipelineMachine, routeDecision, plannerResult, reasonerResult);
-      }
-    }
   }
 
   const modelSelection = resolveModelSelection(config, taskRequest, routeDecision);
-  const modelId = modelSelection.modelId;
+  const reusedExecutorResult = shouldReuseCheckpointStage(runMode, 'executor') ? rerunRequest?.checkpoint.providerResult : undefined;
+  const modelId = reusedExecutorResult?.modelId ?? modelSelection.modelId;
   const providerTarget = resolveProviderTarget(providerRegistry, modelId);
   const providerId = providerTarget.providerId;
   pipelineMachine.updateContext({
@@ -910,131 +900,166 @@ export async function runTaskPipeline(
   let providerPrompt: string | undefined;
   let diagnostic: Diagnostic | undefined;
 
-  try {
-    providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult);
-    const executorSystemPrompt = buildExecutorSystemPrompt(structurizerResult.structuredTask.template?.templateId);
-    trace.add(
-      'executor.prompt',
-      'completed',
-      `systemChars=${executorSystemPrompt.length}; userChars=${providerPrompt.length}`,
-      {
-        metadata: compactMetadata({
-          systemChars: executorSystemPrompt.length,
-          userChars: providerPrompt.length,
-        }),
-      },
-    );
-
-    providerResult = await dependencies.invokeRoutedProvider(
-      providerRegistry,
-      modelId,
-      taskRequest,
-      structurizerResult,
-      routeDecision,
-      plannerResult,
-      reasonerResult,
-    );
-    pipelineMachine.updateContext({
-      providerResult,
-    });
-    if (providerResult.status === 'completed') {
-      pipelineMachine.completeStage('executor', createExecutorStageOutput(providerResult));
-    } else {
-      pipelineMachine.failStage(
-        'executor',
-        {
-          code: providerResult.error?.code ?? 'unknown',
-          message: providerResult.error?.message ?? 'Provider invocation failed.',
-        },
-        createExecutorStageOutput(providerResult),
-      );
-    }
-
-    trace.add(
-      'executor.invoke',
-      providerResult.status === 'completed' ? 'completed' : 'failed',
-      providerResult.status === 'completed'
-        ? `provider=${providerResult.providerId}; model=${providerResult.modelId}; latencyMs=${providerResult.latencyMs ?? -1}`
-        : `provider=${providerResult.providerId}; model=${providerResult.modelId}; error=${providerResult.error?.code ?? 'unknown'}`,
-      {
-        metadata: compactMetadata({
-          providerId: providerResult.providerId,
-          modelId: providerResult.modelId,
-          runtimeId: providerTarget.runtimeId,
-          deploymentMode: providerTarget.deploymentMode,
-          apiFamily: providerTarget.apiFamily,
-          latencyMs: providerResult.latencyMs,
-          retriable: providerResult.error?.retriable,
-        }),
-        error: providerResult.error
-          ? {
-              code: providerResult.error.code,
-              message: providerResult.error.message,
-            }
-          : undefined,
-      },
-    );
-
-    if (providerResult.status === 'failed' && providerResult.error?.retriable) {
-      trace.add('executor.retry', 'retrying', 'Provider error marked retriable; automatic retry disabled in V0.', {
-        metadata: compactMetadata({
-          providerId: providerResult.providerId,
-          modelId: providerResult.modelId,
-          runtimeId: providerTarget.runtimeId,
-          deploymentMode: providerTarget.deploymentMode,
-          apiFamily: providerTarget.apiFamily,
-          retriable: true,
-          retryScheduled: false,
-        }),
-        error: {
-          code: providerResult.error.code,
-          message: providerResult.error.message,
-        },
-      });
-    }
-  } catch (error) {
-    const reason = `Executor stage crashed: ${toErrorMessage(error)}`;
-    providerResult = createFailedProviderExecutionResult(modelId, new Error(reason), providerId);
-    diagnostic = createDiagnosticFromError(error, {
-      category: 'internal',
-      code: 'internal.executor_prompt_crash',
-      summary: 'Executor stage failed',
-      message: 'LLM Crane failed before provider call completed.',
-      stage: 'executor.prompt',
-    });
+  if (shouldReuseCheckpointStage(runMode, 'executor')) {
+    providerResult = rerunRequest?.checkpoint.providerResult as ProviderExecutionResult;
+    diagnostic = rerunRequest?.checkpoint.diagnostic;
+    reusedCheckpointStages.push('executor');
+    const executorDetail = createCheckpointReuseDetail('executor');
+    const executorCheckpointStage = getCheckpointStage(rerunRequest?.checkpoint as PipelineCheckpoint, 'executor');
     pipelineMachine.updateContext({
       providerResult,
       diagnostic,
     });
-    pipelineMachine.failStage(
+    pipelineMachine.skipStage(
       'executor',
+      executorDetail,
+      executorCheckpointStage?.output ?? createExecutorStageOutput(providerResult),
       {
-        code: 'executor_prompt_crash',
-        message: reason,
-      },
-      createExecutorStageOutput(providerResult),
-      {
-        detail: reason,
+        input: executorCheckpointStage?.input ?? createExecutorStageInput(routeDecision, providerTarget),
       },
     );
-    trace.add('executor.prompt', 'failed', reason, {
-      error: {
-        code: 'executor_prompt_crash',
-        message: reason,
-      },
-    });
-    trace.add('executor.invoke', 'skipped', 'Executor invoke skipped after prompt failure.', {
+    trace.add('executor.reuse', 'skipped', executorDetail, {
       metadata: compactMetadata({
-        providerId,
-        modelId,
-        runtimeId: providerTarget.runtimeId,
-        deploymentMode: providerTarget.deploymentMode,
-        apiFamily: providerTarget.apiFamily,
+        providerId: providerResult.providerId,
+        modelId: providerResult.modelId,
+        targetStageId: rerunRequest?.targetStageId,
       }),
+      error: providerResult.error
+        ? {
+            code: providerResult.error.code,
+            message: providerResult.error.message,
+          }
+        : undefined,
     });
+  } else {
+    try {
+      providerPrompt = dependencies.buildProviderUserPrompt(taskRequest, structurizerResult, routeDecision, plannerResult, reasonerResult);
+      const executorSystemPrompt = buildExecutorSystemPrompt(structurizerResult.structuredTask.template?.templateId);
+      trace.add(
+        'executor.prompt',
+        'completed',
+        `systemChars=${executorSystemPrompt.length}; userChars=${providerPrompt.length}`,
+        {
+          metadata: compactMetadata({
+            systemChars: executorSystemPrompt.length,
+            userChars: providerPrompt.length,
+          }),
+        },
+      );
+
+      providerResult = await dependencies.invokeRoutedProvider(
+        providerRegistry,
+        modelId,
+        taskRequest,
+        structurizerResult,
+        routeDecision,
+        plannerResult,
+        reasonerResult,
+      );
+      pipelineMachine.updateContext({
+        providerResult,
+      });
+      if (providerResult.status === 'completed') {
+        pipelineMachine.completeStage('executor', createExecutorStageOutput(providerResult));
+      } else {
+        pipelineMachine.failStage(
+          'executor',
+          {
+            code: providerResult.error?.code ?? 'unknown',
+            message: providerResult.error?.message ?? 'Provider invocation failed.',
+          },
+          createExecutorStageOutput(providerResult),
+        );
+      }
+
+      trace.add(
+        'executor.invoke',
+        providerResult.status === 'completed' ? 'completed' : 'failed',
+        providerResult.status === 'completed'
+          ? `provider=${providerResult.providerId}; model=${providerResult.modelId}; latencyMs=${providerResult.latencyMs ?? -1}`
+          : `provider=${providerResult.providerId}; model=${providerResult.modelId}; error=${providerResult.error?.code ?? 'unknown'}`,
+        {
+          metadata: compactMetadata({
+            providerId: providerResult.providerId,
+            modelId: providerResult.modelId,
+            runtimeId: providerTarget.runtimeId,
+            deploymentMode: providerTarget.deploymentMode,
+            apiFamily: providerTarget.apiFamily,
+            latencyMs: providerResult.latencyMs,
+            retriable: providerResult.error?.retriable,
+          }),
+          error: providerResult.error
+            ? {
+                code: providerResult.error.code,
+                message: providerResult.error.message,
+              }
+            : undefined,
+        },
+      );
+
+      if (providerResult.status === 'failed' && providerResult.error?.retriable) {
+        trace.add('executor.retry', 'retrying', 'Provider error marked retriable; automatic retry disabled in V0.', {
+          metadata: compactMetadata({
+            providerId: providerResult.providerId,
+            modelId: providerResult.modelId,
+            runtimeId: providerTarget.runtimeId,
+            deploymentMode: providerTarget.deploymentMode,
+            apiFamily: providerTarget.apiFamily,
+            retriable: true,
+            retryScheduled: false,
+          }),
+          error: {
+            code: providerResult.error.code,
+            message: providerResult.error.message,
+          },
+        });
+      }
+    } catch (error) {
+      const reason = `Executor stage crashed: ${toErrorMessage(error)}`;
+      providerResult = createFailedProviderExecutionResult(modelId, new Error(reason), providerId);
+      diagnostic = createDiagnosticFromError(error, {
+        category: 'internal',
+        code: 'internal.executor_prompt_crash',
+        summary: 'Executor stage failed',
+        message: 'LLM Crane failed before provider call completed.',
+        stage: 'executor.prompt',
+      });
+      pipelineMachine.updateContext({
+        providerResult,
+        diagnostic,
+      });
+      pipelineMachine.failStage(
+        'executor',
+        {
+          code: 'executor_prompt_crash',
+          message: reason,
+        },
+        createExecutorStageOutput(providerResult),
+        {
+          detail: reason,
+        },
+      );
+      trace.add('executor.prompt', 'failed', reason, {
+        error: {
+          code: 'executor_prompt_crash',
+          message: reason,
+        },
+      });
+      trace.add('executor.invoke', 'skipped', 'Executor invoke skipped after prompt failure.', {
+        metadata: compactMetadata({
+          providerId,
+          modelId,
+          runtimeId: providerTarget.runtimeId,
+          deploymentMode: providerTarget.deploymentMode,
+          apiFamily: providerTarget.apiFamily,
+        }),
+      });
+    }
   }
 
-  const output = buildTaskOutput(providerResult);
+  const output = shouldReuseCheckpointStage(runMode, 'executor')
+    ? rerunRequest?.checkpoint.output ?? buildTaskOutput(providerResult)
+    : buildTaskOutput(providerResult);
   const costEstimate = CostEstimateSchema.parse(
     estimateModelCost({
       modelId,
@@ -1061,6 +1086,84 @@ export async function runTaskPipeline(
     diagnostic,
     output,
   });
+
+  if (routeDecision.route === 'complex') {
+    const verifierModelId = config.defaultSimpleModel;
+    const verifierTarget = resolveProviderTarget(providerRegistry, verifierModelId);
+    const verifierInput = createVerifierStageInput(
+      routeDecision,
+      providerResult.status,
+      plannerResult?.status,
+      plannerResult?.steps.length ?? 0,
+      taskRequest.constraints.length,
+      plannerResult?.downstreamHints.verifierChecks.length ?? 0,
+      output.length,
+    );
+
+    pipelineMachine.startStage('verifier', verifierInput);
+
+    if (providerResult.status !== 'completed') {
+      verifierResult = annotateVerifierSkip(
+        trace,
+        pipelineMachine,
+        routeDecision,
+        plannerResult as PlannerResult,
+        providerResult,
+        output,
+        'Verifier skipped because executor did not produce completed output.',
+        createVerifierFailureResult(
+          'Verifier skipped because executor did not complete successfully.',
+          [providerResult.error?.message ?? 'Executor output unavailable for verification.'],
+          'retry',
+        ),
+      );
+    } else {
+      trace.add('verifier.start', 'running', 'Verifier stage started.', {
+        metadata: compactMetadata({
+          route: routeDecision.route,
+          verifierModelId,
+          verifierProviderId: verifierTarget.providerId,
+          outputChars: output.length,
+          constraintCount: taskRequest.constraints.length,
+          verifierCheckCount: plannerResult?.downstreamHints.verifierChecks.length ?? 0,
+        }),
+      });
+
+      verifierResult = await dependencies.verifyTaskOutput(providerRegistry, verifierModelId, {
+        taskRequest,
+        structurizerResult,
+        routeDecision,
+        plannerResult,
+        reasonerResult,
+        providerResult,
+        output,
+      });
+
+      pipelineMachine.updateContext({
+        verifierResult,
+      });
+      pipelineMachine.completeStage('verifier', createVerifierStageOutput('completed', verifierResult.summary, verifierResult), {
+        error: createVerifierStageError(verifierResult),
+      });
+      trace.add(
+        'verifier.finish',
+        verifierResult.verdict === 'fail' ? 'failed' : 'completed',
+        verifierResult.summary,
+        {
+          metadata: compactMetadata({
+            route: routeDecision.route,
+            verifierModelId,
+            verifierProviderId: verifierTarget.providerId,
+            verifierVerdict: verifierResult.verdict,
+            suggestedAction: verifierResult.suggestedAction,
+            findingCount: verifierResult.findings.length,
+          }),
+          error: createVerifierStageError(verifierResult),
+        },
+      );
+    }
+  }
+
   pipelineMachine.startStage('response', createResponseStageInput(providerResult, costEstimate, diagnostic));
 
   trace.add('response.cost', 'completed', buildCostDetail(costEstimate), {
@@ -1120,6 +1223,10 @@ export async function runTaskPipeline(
     plannerResult,
     reasonerResult,
     verifierResult,
+    output,
+    providerResult,
+    costEstimate,
+    diagnostic,
     pipeline,
     trace: traceEntries,
     capturedAt: dependencies.createTimestamp(),

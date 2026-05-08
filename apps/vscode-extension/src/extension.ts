@@ -701,7 +701,7 @@ function formatTaskPolicyOverride(policyOverrides: TaskPolicyOverrides | undefin
 function getSupportedRerunTargets(taskResponse: TaskResponse): RerunnableStageId[] {
   const route = taskResponse.checkpoint.routeDecision?.route ?? taskResponse.checkpoint.pipeline.route;
   return route === 'complex'
-    ? ['structurizer', 'router', 'planner', 'reasoner', 'verifier', 'executor']
+    ? ['structurizer', 'router', 'planner', 'reasoner', 'executor', 'verifier']
     : ['structurizer', 'router', 'executor'];
 }
 

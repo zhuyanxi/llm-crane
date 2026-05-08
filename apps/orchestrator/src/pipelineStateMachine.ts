@@ -94,9 +94,9 @@ const GRAPH_TEMPLATES: Record<PipelineGraph, readonly StageTemplate[]> = {
     { stageId: 'router', label: 'Router', dependsOn: ['structurizer'] },
     { stageId: 'planner', label: 'Planner', dependsOn: ['router'] },
     { stageId: 'reasoner', label: 'Reasoner', dependsOn: ['planner'] },
-    { stageId: 'verifier', label: 'Verifier', dependsOn: ['reasoner'] },
-    { stageId: 'executor', label: 'Executor', dependsOn: ['verifier'] },
-    { stageId: 'response', label: 'Response Assembly', dependsOn: ['executor'] },
+    { stageId: 'executor', label: 'Executor', dependsOn: ['reasoner'] },
+    { stageId: 'verifier', label: 'Verifier', dependsOn: ['executor'] },
+    { stageId: 'response', label: 'Response Assembly', dependsOn: ['verifier'] },
   ],
 };
 
@@ -481,16 +481,22 @@ export function createReasonerStageOutput(source: ReasonerStageOutputSource, det
 
 export function createVerifierStageInput(
   routeDecision: RouteDecision,
-  providerReady: boolean,
+  executorStatus: 'completed' | 'failed',
   plannerStatus?: PlannerResult['status'] | 'skipped',
   planStepCount = 0,
+  constraintCount = 0,
+  verifierCheckCount = 0,
+  outputChars = 0,
 ): PipelineStageInput {
   return {
     stageId: 'verifier',
     route: routeDecision.route,
-    providerReady,
+    executorStatus,
     plannerStatus,
     planStepCount,
+    constraintCount,
+    verifierCheckCount,
+    outputChars,
   };
 }
 
@@ -706,19 +712,6 @@ export function buildCachedPipelineState(
         ),
       },
     );
-    machine.skipStage(
-      'verifier',
-      'Cache hit; reused complex graph state without rerunning verifier.',
-      createVerifierStageOutput('skipped', 'Cache hit reused verifier checkpoint.', cachedResponse.verifierResult),
-      {
-        input: createVerifierStageInput(
-          cachedResponse.routeDecision,
-          true,
-          complexPlannerResult.status,
-          complexPlannerResult.steps.length,
-        ),
-      },
-    );
   }
 
   machine.skipStage(
@@ -735,6 +728,28 @@ export function buildCachedPipelineState(
       }),
     },
   );
+
+  if (cachedResponse.routeDecision.route === 'complex') {
+    const plannerStatus = plannerResult?.status ?? 'fallback';
+    const verifierCheckCount = plannerResult?.downstreamHints.verifierChecks.length ?? 0;
+    machine.skipStage(
+      'verifier',
+      'Cache hit; reused complex graph state without rerunning verifier.',
+      createVerifierStageOutput('skipped', 'Cache hit reused verifier checkpoint.', cachedResponse.verifierResult),
+      {
+        input: createVerifierStageInput(
+          cachedResponse.routeDecision,
+          cachedResponse.providerResult.status,
+          plannerStatus,
+          plannerResult?.steps.length ?? 0,
+          taskRequest.constraints.length,
+          verifierCheckCount,
+          cachedResponse.output.length,
+        ),
+      },
+    );
+  }
+
   machine.startStage('response', createResponseStageInput(cachedResponse.providerResult, cachedResponse.costEstimate, cachedResponse.diagnostic));
   machine.completeStage(
     'response',

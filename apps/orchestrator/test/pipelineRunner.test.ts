@@ -44,6 +44,25 @@ function createProviderRegistryStub(outputText: string) {
   };
 }
 
+function createVerifierResult(overrides: Partial<{ verdict: 'pass' | 'fail' | 'warning'; summary: string; suggestedAction: 'proceed' | 'retry' | 'upgrade-model' | 'manual-confirm'; findingCode: string; detail: string; }> = {}) {
+  return {
+    verifierId: 'model-consistency-v1',
+    verifierKind: 'model' as const,
+    verdict: overrides.verdict ?? 'pass',
+    summary: overrides.summary ?? 'Output satisfied requested constraints and plan.',
+    reasons: [overrides.detail ?? 'Verifier found no inconsistencies.'],
+    suggestedAction: overrides.suggestedAction ?? 'proceed',
+    findings: [
+      {
+        code: overrides.findingCode ?? 'constraint_check',
+        summary: overrides.summary ?? 'Verifier passed output.',
+        detail: overrides.detail ?? 'Verifier found no inconsistencies.',
+        severity: overrides.verdict ?? 'pass',
+      },
+    ],
+  };
+}
+
 describe('runTaskPipeline', () => {
   it('runs simple path end to end with simple model', async () => {
     const providerRegistry = createProviderRegistryStub('simple result');
@@ -114,7 +133,9 @@ describe('runTaskPipeline', () => {
       ],
     };
 
-    const response = await runTaskPipeline(runtimeConfig, providerRegistry as never, taskRequest);
+    const response = await runTaskPipeline(runtimeConfig, providerRegistry as never, taskRequest, {
+      verifyTaskOutput: async () => createVerifierResult(),
+    });
 
     expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
     expect(response.routeDecision.route).toBe('complex');
@@ -127,18 +148,19 @@ describe('runTaskPipeline', () => {
     expect(response.reasonerResult?.status).toBe('reasoned');
     expect(response.reasonerResult?.needReasoning).toBe(true);
     expect(response.reasonerResult?.summary).toContain('Escalate reasoning');
-    expect(response.verifierResult?.verdict).toBe('warning');
-    expect(response.verifierResult?.suggestedAction).toBe('manual-confirm');
+    expect(response.verifierResult?.verdict).toBe('pass');
+    expect(response.verifierResult?.suggestedAction).toBe('proceed');
     expect(response.pipeline.graph).toBe('complex-v1');
     expect(response.pipeline.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'reasoner')?.state).toBe('completed');
-    expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.dependsOn).toEqual(['reasoner']);
+    expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('completed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId).toBe('verifier');
     expect(response.trace.some((event) => event.stage === 'planner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'reasoner.finish' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'completed')).toBe(true);
-    expect(response.trace.some((event) => event.stage === 'verifier.finish' && event.metadata.verifierVerdict === 'warning')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'verifier.finish' && event.metadata.verifierVerdict === 'pass')).toBe(true);
   });
 
   it('honors manual complex-default override on simple route and records override trace', async () => {
@@ -280,6 +302,7 @@ describe('runTaskPipeline', () => {
         planTask: () => {
           throw new Error('planner exploded');
         },
+        verifyTaskOutput: async () => createVerifierResult({ verdict: 'warning', suggestedAction: 'manual-confirm', summary: 'Verifier accepted planner fallback with warning.', findingCode: 'reasoning_gap', detail: 'Planner fallback reduced confidence.' }),
       },
     );
 
@@ -319,6 +342,7 @@ describe('runTaskPipeline', () => {
         reasonTask: () => {
           throw new Error('reasoner exploded');
         },
+        verifyTaskOutput: async () => createVerifierResult({ verdict: 'warning', suggestedAction: 'manual-confirm', summary: 'Verifier accepted reasoner fallback with warning.', findingCode: 'reasoning_gap', detail: 'Reasoner fallback reduced confidence.' }),
       },
     );
 
@@ -360,12 +384,16 @@ describe('runTaskPipeline', () => {
       ],
     };
 
-    const firstResponse = await runTaskPipeline(runtimeConfig, providerRegistry as never, taskRequest);
+    const firstResponse = await runTaskPipeline(runtimeConfig, providerRegistry as never, taskRequest, {
+      verifyTaskOutput: async () => createVerifierResult({ summary: 'Initial verifier pass.' }),
+    });
     const rerunResponse = await runTaskPipeline(
       runtimeConfig,
       providerRegistry as never,
       firstResponse.checkpoint.taskRequest,
-      {},
+      {
+        verifyTaskOutput: async () => createVerifierResult({ summary: 'Planner rerun verifier pass.' }),
+      },
       {
         mode: 'stage-rerun',
         rerun: {
@@ -385,6 +413,68 @@ describe('runTaskPipeline', () => {
     expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('completed');
     expect(rerunResponse.trace.some((event) => event.stage === 'rerun.resume' && event.status === 'completed')).toBe(true);
     expect(rerunResponse.trace.length).toBeGreaterThan(firstResponse.trace.length);
+  });
+
+  it('reruns verifier from executor checkpoint without reinvoking executor', async () => {
+    const invokeRoutedProvider = vi.fn(async (_providerRegistry: unknown, modelId: string) => ({
+      status: 'completed' as const,
+      providerId: 'anthropic' as const,
+      modelId,
+      outputText: 'executor result for verifier rerun',
+      latencyMs: 150,
+    }));
+    const verifyTaskOutput = vi
+      .fn()
+      .mockResolvedValueOnce(createVerifierResult({ summary: 'Initial verifier pass.' }))
+      .mockResolvedValueOnce(createVerifierResult({ verdict: 'fail', suggestedAction: 'upgrade-model', summary: 'Verifier found reasoning gap.', findingCode: 'reasoning_gap', detail: 'Output over-claimed missing evidence.' }));
+
+    const taskRequest: TaskRequest = {
+      task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+      qualityBar: 'high',
+      constraints: ['Keep public API stable'],
+      contexts: [
+        {
+          source: 'workspace',
+          uri: '/workspace',
+          content: 'workspace snapshot',
+        },
+      ],
+    };
+
+    const firstResponse = await runTaskPipeline(
+      runtimeConfig,
+      {} as never,
+      taskRequest,
+      {
+        invokeRoutedProvider,
+        verifyTaskOutput,
+      },
+    );
+    const rerunResponse = await runTaskPipeline(
+      runtimeConfig,
+      {} as never,
+      firstResponse.checkpoint.taskRequest,
+      {
+        invokeRoutedProvider,
+        verifyTaskOutput,
+      },
+      {
+        mode: 'stage-rerun',
+        rerun: {
+          targetStageId: 'verifier',
+          checkpoint: firstResponse.checkpoint,
+        },
+      },
+    );
+
+    expect(invokeRoutedProvider).toHaveBeenCalledTimes(1);
+    expect(rerunResponse.runInfo.reusedCheckpointStages).toEqual(['structurizer', 'router', 'planner', 'reasoner', 'executor']);
+    expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('skipped');
+    expect(rerunResponse.pipeline.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('completed');
+    expect(rerunResponse.verifierResult?.verdict).toBe('fail');
+    expect(rerunResponse.verifierResult?.suggestedAction).toBe('upgrade-model');
+    expect(rerunResponse.checkpoint.providerResult?.outputText).toBe('executor result for verifier rerun');
+    expect(rerunResponse.checkpoint.output).toBe('executor result for verifier rerun');
   });
 
   it('rejects unsupported planner rerun target for simple checkpoint', async () => {
@@ -457,6 +547,7 @@ describe('runTaskPipeline', () => {
     expect(response.output).toContain('Task execution failed');
     expect(response.pipeline.state).toBe('failed');
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'executor')?.state).toBe('failed');
+    expect(response.pipeline.stages.some((stage) => stage.stageId === 'verifier')).toBe(false);
     expect(response.pipeline.stages.find((stage) => stage.stageId === 'response')?.state).toBe('completed');
     expect(response.trace.some((event) => event.stage === 'executor.prompt' && event.status === 'failed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'executor.invoke' && event.status === 'skipped')).toBe(true);

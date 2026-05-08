@@ -101,7 +101,12 @@ describe('PipelineStateMachine', () => {
           scoreBreakdown: [],
           strategy: 'rules-v1',
         },
-        true,
+        'completed',
+        'planned',
+        3,
+        1,
+        1,
+        120,
       ),
     });
 
@@ -110,7 +115,8 @@ describe('PipelineStateMachine', () => {
     expect(serialized.graph).toBe('complex-v1');
     expect(serialized.stages.find((stage) => stage.stageId === 'request')?.state).toBe('completed');
     expect(serialized.stages.find((stage) => stage.stageId === 'planner')?.state).toBe('pending');
-    expect(serialized.stages.find((stage) => stage.stageId === 'executor')?.dependsOn).toEqual(['verifier']);
+    expect(serialized.stages.find((stage) => stage.stageId === 'executor')?.dependsOn).toEqual(['reasoner']);
+    expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.dependsOn).toEqual(['executor']);
     expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.state).toBe('skipped');
     expect(serialized.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId).toBe('verifier');
     if (serialized.stages.find((stage) => stage.stageId === 'verifier')?.output?.stageId !== 'verifier') {

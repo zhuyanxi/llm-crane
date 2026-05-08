@@ -17,12 +17,12 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
-- Complex-path verifier stage now uses structured verifier result model with verdict, reasons, and suggested action, even when current implementation still emits deferred warning placeholder.
+- Complex-path verifier stage now runs after Executor with a low-cost model consistency check over output, constraints, and plan, then records structured verdict, findings, and suggested action.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
 - Reuse cached results for repeated tasks, or bypass cache for fresh run.
-- Resume from checkpointed stages such as Planner or Executor instead of rerunning whole complex pipeline, while keeping latest checkpointed manual override state.
+- Resume from checkpointed stages such as Planner, Executor, or Verifier instead of rerunning whole complex pipeline, while keeping latest checkpointed manual override state.
 - See classified diagnostics for configuration, provider, schema, and internal failures.
 
 ### Quick start
@@ -207,7 +207,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 ### Current V0 behavior
 
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
-- Complex path runs Planner before Executor, conditionally enters Reasoner when router or planner signals extra synthesis, and falls back conservatively if planner or reasoner output is invalid
+- Complex path runs Planner, Reasoner, Executor, then low-cost Verifier; verifier checks output against constraints, expected output, and plan before final response is assembled
 - Task panel supports optional template metadata for refactor, debug, and architecture-analysis requests; validated template selection is carried inside `taskTemplate`
 - Built-in templates now carry context strategy metadata, and attached contexts can include `priority`, `truncated`, and `originalLength` for preview and downstream prompts
 - Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
@@ -222,8 +222,8 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks
 - `taskResult.reasonerResult` carries `needReasoning`, decision source, early-exit or escalation summary, and key evidence for downstream executor/UI use
-- `taskResult.verifierResult` now carries shared verification verdict, reasons, suggested action, and findings for future model or rule verifiers
-- `taskResult.checkpoint` carries resumable task request, pipeline state, and trace history for stage rerun API
+- `taskResult.verifierResult` now carries shared verification verdict, reasons, suggested action, and findings from the low-cost model verifier and future rule verifiers
+- `taskResult.checkpoint` carries resumable task request, executor output, provider result, pipeline state, and trace history for stage rerun API
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`
 - Cache uses SQLite-backed local storage with stable task fingerprint and `cache.lookup` / `cache.hit` trace stages

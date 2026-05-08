@@ -152,14 +152,13 @@ describe('buildPipelineTimeline', () => {
           {
             stageId: 'verifier',
             label: 'Verifier',
-            state: 'skipped',
-            dependsOn: ['reasoner'],
+            state: 'completed',
+            dependsOn: ['executor'],
             startedAt: '2026-05-08T10:00:00.100Z',
             completedAt: '2026-05-08T10:00:00.120Z',
-            skippedReason: 'Verifier deferred until dedicated strategies land.',
             output: {
               stageId: 'verifier',
-              status: 'skipped',
+              status: 'completed',
               detail: 'Verifier deferred until dedicated strategies land.',
               result: {
                 verifierId: 'deferred-verifier',
