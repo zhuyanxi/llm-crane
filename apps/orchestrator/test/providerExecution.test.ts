@@ -10,9 +10,11 @@ const baseTaskRequest: TaskRequest = {
   contexts: [
     {
       source: 'file',
+      priority: 'primary',
       uri: '/workspace/src/app.ts',
       languageId: 'typescript',
       content: 'export const value = 1;',
+      truncated: false,
     },
   ],
 };
@@ -120,6 +122,7 @@ describe('buildProviderUserPrompt', () => {
     expect(prompt).toContain('Execution plan for analysis task');
     expect(prompt).toContain('Escalate reasoning for analysis');
     expect(prompt).toContain('/workspace/src/app.ts');
+    expect(prompt).toContain('priority=primary');
   });
 });
 

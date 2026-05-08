@@ -9,12 +9,16 @@ export const ProviderApiFamilySchema = z.enum(['openai-compatible', 'anthropic',
 export const ProviderAuthModeSchema = z.enum(['none', 'bearer', 'header', 'query']);
 
 export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
+export const ContextPrioritySchema = z.enum(['primary', 'supporting']);
 
 export const TaskContextSchema = z.object({
   source: ContextSourceSchema,
+  priority: ContextPrioritySchema.default('primary'),
   uri: z.string().optional(),
   languageId: z.string().optional(),
   content: z.string().min(1),
+  truncated: z.boolean().default(false),
+  originalLength: z.number().int().positive().optional(),
 });
 
 export const ProviderSelectionSchema = z.object({
@@ -174,6 +178,13 @@ export const PipelineTraceEventSchema = z.object({
 export const StructuredTaskTypeSchema = z.enum(['refactor', 'debug', 'analysis', 'implementation', 'test', 'other']);
 
 export const TaskTemplateFieldKindSchema = z.enum(['short-text', 'long-text']);
+export const TaskTemplateContextStrategyModeSchema = z.enum(['selection-first', 'file-first', 'manual-only']);
+
+export const TaskTemplateContextStrategySchema = z.object({
+  mode: TaskTemplateContextStrategyModeSchema,
+  includeSupportingContext: z.boolean().default(false),
+  maxChars: z.number().int().positive().default(6000),
+});
 
 export const TaskTemplateFieldSchema = z.object({
   fieldId: z.string().min(1),
@@ -189,6 +200,7 @@ export const TaskTemplateDefinitionSchema = z.object({
   label: z.string().min(1),
   description: z.string().min(1),
   taskType: StructuredTaskTypeSchema,
+  contextStrategy: TaskTemplateContextStrategySchema,
   defaultConstraints: z.array(z.string().min(1)).default([]),
   inputFields: z.array(TaskTemplateFieldSchema).min(1),
 });
@@ -212,6 +224,11 @@ export const BUILT_IN_TASK_TEMPLATES = z.array(TaskTemplateDefinitionSchema).par
     label: 'Refactor',
     description: 'Restructure existing code while keeping requested behavior and public contracts stable.',
     taskType: 'refactor',
+    contextStrategy: {
+      mode: 'selection-first',
+      includeSupportingContext: true,
+      maxChars: 6000,
+    },
     defaultConstraints: [
       'Keep public API stable unless change is explicitly requested.',
       'Preserve existing behavior unless fixing clearly stated bug.',
@@ -248,6 +265,11 @@ export const BUILT_IN_TASK_TEMPLATES = z.array(TaskTemplateDefinitionSchema).par
     label: 'Debug',
     description: 'Investigate failure path, isolate root cause, and keep speculation explicit.',
     taskType: 'debug',
+    contextStrategy: {
+      mode: 'file-first',
+      includeSupportingContext: true,
+      maxChars: 8000,
+    },
     defaultConstraints: [
       'Prioritize root cause over speculative fixes.',
       'Call out missing repro steps or evidence before guessing.',
@@ -284,6 +306,11 @@ export const BUILT_IN_TASK_TEMPLATES = z.array(TaskTemplateDefinitionSchema).par
     label: 'Architecture Analysis',
     description: 'Review architecture, identify high-impact risks, and rank them before proposing changes.',
     taskType: 'analysis',
+    contextStrategy: {
+      mode: 'file-first',
+      includeSupportingContext: false,
+      maxChars: 12000,
+    },
     defaultConstraints: [
       'Rank risks before proposing remediation.',
       'Do not invent system details that are missing from provided context.',
@@ -754,7 +781,10 @@ export type PipelineTraceMetadataValue = z.infer<typeof PipelineTraceMetadataVal
 export type PipelineTraceError = z.infer<typeof PipelineTraceErrorSchema>;
 export type PipelineTraceEvent = z.infer<typeof PipelineTraceEventSchema>;
 export type StructuredTaskType = z.infer<typeof StructuredTaskTypeSchema>;
+export type ContextPriority = z.infer<typeof ContextPrioritySchema>;
 export type TaskTemplateFieldKind = z.infer<typeof TaskTemplateFieldKindSchema>;
+export type TaskTemplateContextStrategyMode = z.infer<typeof TaskTemplateContextStrategyModeSchema>;
+export type TaskTemplateContextStrategy = z.infer<typeof TaskTemplateContextStrategySchema>;
 export type TaskTemplateField = z.infer<typeof TaskTemplateFieldSchema>;
 export type TaskTemplateDefinition = z.infer<typeof TaskTemplateDefinitionSchema>;
 export type TaskTemplateInput = z.infer<typeof TaskTemplateInputSchema>;

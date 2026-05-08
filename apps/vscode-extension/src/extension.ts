@@ -15,12 +15,17 @@ import {
   OrchestratorProcessManager,
   type OrchestratorReadyMode,
 } from './orchestratorProcessManager';
+import {
+  getContextModeLabel,
+  planTaskContexts,
+  resolveContextStrategy,
+  type ContextCaptureMode,
+  type EditorContextSnapshot,
+} from './taskContextPlan';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
 const CUSTOM_TASK_TEMPLATE_ID = 'custom';
-
-type ContextCaptureMode = 'manual' | 'selection' | 'file' | 'auto';
 
 type SubmitTaskPanelInboundMessage = {
   type: 'submitTask';
@@ -29,6 +34,14 @@ type SubmitTaskPanelInboundMessage = {
   ignoreCache: boolean;
   templateId: string;
   templateValues: Record<string, string>;
+  includeSupportingContext: boolean;
+};
+
+type PreviewContextPanelInboundMessage = {
+  type: 'previewContext';
+  contextMode: ContextCaptureMode;
+  templateId: string;
+  includeSupportingContext: boolean;
 };
 
 type RerunTaskPanelInboundMessage = {
@@ -36,7 +49,7 @@ type RerunTaskPanelInboundMessage = {
   targetStageId: RerunnableStageId;
 };
 
-type TaskPanelInboundMessage = SubmitTaskPanelInboundMessage | RerunTaskPanelInboundMessage;
+type TaskPanelInboundMessage = SubmitTaskPanelInboundMessage | PreviewContextPanelInboundMessage | RerunTaskPanelInboundMessage;
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -75,6 +88,21 @@ type TaskPanelStatusMessage = {
   resultView?: TaskResultView;
 };
 
+type ContextPreviewItemView = {
+  headline: string;
+  detail: string;
+  preview: string;
+};
+
+type ContextPreviewMessage = {
+  type: 'contextPreview';
+  headline: string;
+  detail: string;
+  warnings: string[];
+  items: ContextPreviewItemView[];
+  blockingError?: string;
+};
+
 let orchestratorManager: OrchestratorProcessManager | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -95,7 +123,7 @@ export function activate(context: vscode.ExtensionContext): void {
     postTaskStatus(panel.webview, {
       status: 'idle',
       headline: 'Task panel ready',
-      detail: 'Choose context mode, then submit task. Current panel shows output, selected model, cache state, execution path, trace, token usage, latency, and cost.',
+      detail: 'Choose template-aware context strategy, inspect preview, then submit task. Current panel shows output, selected model, cache state, execution path, trace, token usage, latency, and cost.',
     });
 
     const panelDisposables: vscode.Disposable[] = [];
@@ -145,6 +173,11 @@ async function handleTaskPanelMessage(
   processManager: OrchestratorProcessManager,
   panelSession: TaskPanelSession,
 ): Promise<void> {
+  if (isPreviewContextPanelInboundMessage(message)) {
+    postContextPreview(webview, buildContextPreviewMessage(message.contextMode, message.templateId, message.includeSupportingContext));
+    return;
+  }
+
   if (isSubmitTaskPanelInboundMessage(message)) {
     const taskDraft = buildTaskDraftPreview(message.value, message.templateId, message.templateValues);
     if (!taskDraft) {
@@ -164,7 +197,14 @@ async function handleTaskPanelMessage(
     });
 
     try {
-      const taskRequest = buildTaskRequest(message.value, message.contextMode, message.ignoreCache, message.templateId, message.templateValues);
+      const taskRequest = buildTaskRequest(
+        message.value,
+        message.contextMode,
+        message.ignoreCache,
+        message.templateId,
+        message.templateValues,
+        message.includeSupportingContext,
+      );
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
       const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
 
@@ -289,6 +329,22 @@ function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTas
     typeof candidate.ignoreCache === 'boolean' &&
     typeof candidate.templateId === 'string' &&
     isStringRecord(candidate.templateValues) &&
+    typeof candidate.includeSupportingContext === 'boolean' &&
+    isContextCaptureMode(candidate.contextMode)
+  );
+}
+
+function isPreviewContextPanelInboundMessage(message: unknown): message is PreviewContextPanelInboundMessage {
+  if (typeof message !== 'object' || message === null) {
+    return false;
+  }
+
+  const candidate = message as Partial<PreviewContextPanelInboundMessage>;
+  return (
+    candidate.type === 'previewContext' &&
+    typeof candidate.contextMode === 'string' &&
+    typeof candidate.templateId === 'string' &&
+    typeof candidate.includeSupportingContext === 'boolean' &&
     isContextCaptureMode(candidate.contextMode)
   );
 }
@@ -307,7 +363,7 @@ function isRerunnableStageId(value: string): value is RerunnableStageId {
 }
 
 function isContextCaptureMode(value: string): value is ContextCaptureMode {
-  return value === 'manual' || value === 'selection' || value === 'file' || value === 'auto';
+  return value === 'template-default' || value === 'selection-first' || value === 'file-first' || value === 'manual-only';
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -372,20 +428,109 @@ function validateTemplateInputs(templateDefinition: TaskTemplateDefinition, temp
   }
 }
 
+function resolveTaskTemplateDefinition(templateId: string): TaskTemplateDefinition | undefined {
+  if (templateId === CUSTOM_TASK_TEMPLATE_ID) {
+    return undefined;
+  }
+
+  const templateDefinition = getTaskTemplateDefinition(templateId);
+  if (!templateDefinition) {
+    throw new Error(`Unknown task template id: ${templateId}.`);
+  }
+
+  return templateDefinition;
+}
+
+function getEditorContextSnapshot(): EditorContextSnapshot | undefined {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return undefined;
+  }
+
+  return {
+    uri: getContextUri(editor.document),
+    languageId: editor.document.languageId,
+    selectionContent: editor.document.getText(editor.selection),
+    fileContent: editor.document.getText(),
+  };
+}
+
+function buildContextCollectionPlan(
+  contextMode: ContextCaptureMode,
+  templateId: string,
+  includeSupportingContext: boolean,
+) {
+  const templateDefinition = resolveTaskTemplateDefinition(templateId);
+  const strategy = resolveContextStrategy(contextMode, templateDefinition?.contextStrategy, includeSupportingContext);
+  const plan = planTaskContexts(getEditorContextSnapshot(), strategy);
+
+  return {
+    templateDefinition,
+    plan,
+  };
+}
+
+function truncatePreviewText(value: string, length = 180): string {
+  return value.length <= length ? value : `${value.slice(0, length - 3)}...`;
+}
+
+function buildContextPreviewMessage(
+  contextMode: ContextCaptureMode,
+  templateId: string,
+  includeSupportingContext: boolean,
+): ContextPreviewMessage {
+  try {
+    const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
+    const effectiveModeLabel = getContextModeLabel(plan.effectiveStrategy.mode);
+    const templatePrefix = templateDefinition ? `${templateDefinition.label} template. ` : 'Freeform task. ';
+
+    return {
+      type: 'contextPreview',
+      headline: `${effectiveModeLabel} preview`,
+      detail: plan.blockingError
+        ? `${templatePrefix}${plan.blockingError}`
+        : plan.contexts.length === 0
+          ? `${templatePrefix}No editor context will be attached.`
+          : `${templatePrefix}${plan.contexts.length} context item(s) ready with ${effectiveModeLabel.toLowerCase()} strategy.`,
+      warnings: plan.warnings,
+      blockingError: plan.blockingError,
+      items: plan.contexts.map((context) => ({
+        headline: `${context.source} · ${context.priority}`,
+        detail: [
+          context.languageId ? `language=${context.languageId}` : undefined,
+          context.uri ? `uri=${context.uri}` : undefined,
+          context.truncated && context.originalLength
+            ? `chars=${context.content.length}/${context.originalLength}`
+            : `chars=${context.content.length}`,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        preview: truncatePreviewText(context.content),
+      })),
+    };
+  } catch (error) {
+    return {
+      type: 'contextPreview',
+      headline: 'Context preview unavailable',
+      detail: error instanceof Error ? error.message : 'Unexpected context preview error.',
+      warnings: [],
+      items: [],
+      blockingError: error instanceof Error ? error.message : 'Unexpected context preview error.',
+    };
+  }
+}
+
 function buildTaskRequest(
   task: string,
   contextMode: ContextCaptureMode,
   ignoreCache: boolean,
   templateId: string,
   templateValues: Record<string, string>,
+  includeSupportingContext: boolean,
 ): TaskRequest {
   const normalizedTask = task.trim();
   const normalizedTemplateValues = normalizeTemplateValues(templateValues);
-  const templateDefinition = templateId === CUSTOM_TASK_TEMPLATE_ID ? undefined : getTaskTemplateDefinition(templateId);
-
-  if (templateId !== CUSTOM_TASK_TEMPLATE_ID && !templateDefinition) {
-    throw new Error(`Unknown task template id: ${templateId}.`);
-  }
+  const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
 
   if (templateDefinition) {
     validateTemplateInputs(templateDefinition, normalizedTemplateValues);
@@ -399,6 +544,10 @@ function buildTaskRequest(
     throw new Error('Enter task text or choose a template with the required inputs before submitting.');
   }
 
+  if (plan.blockingError) {
+    throw new Error(plan.blockingError);
+  }
+
   return TaskRequestSchema.parse({
     task: resolvedTask,
     taskType: templateDefinition?.taskType,
@@ -410,7 +559,7 @@ function buildTaskRequest(
       : undefined,
     constraints: templateDefinition?.defaultConstraints ?? [],
     cacheMode: ignoreCache ? 'bypass' : 'default',
-    contexts: collectTaskContexts(contextMode),
+    contexts: plan.contexts,
   });
 }
 
@@ -432,75 +581,8 @@ function buildRerunTaskRequest(taskResponse: TaskResponse, targetStageId: Rerunn
   };
 }
 
-function collectTaskContexts(contextMode: ContextCaptureMode): TaskContext[] {
-  if (contextMode === 'manual') {
-    return [];
-  }
-
-  const editor = vscode.window.activeTextEditor;
-  if (!editor) {
-    throw new Error('Open file in editor before sending selection or file context.');
-  }
-
-  const selectionText = editor.document.getText(editor.selection);
-
-  if (contextMode === 'selection') {
-    return [createSelectionContext(editor, selectionText)];
-  }
-
-  if (contextMode === 'file') {
-    return [createFileContext(editor)];
-  }
-
-  if (selectionText.trim().length > 0) {
-    return [createSelectionContext(editor, selectionText)];
-  }
-
-  return [createFileContext(editor)];
-}
-
-function createSelectionContext(editor: vscode.TextEditor, selectionText: string): TaskContext {
-  if (selectionText.trim().length === 0) {
-    throw new Error('Selection mode requires non-empty editor selection.');
-  }
-
-  return {
-    source: 'selection',
-    uri: getContextUri(editor.document),
-    languageId: editor.document.languageId,
-    content: selectionText,
-  };
-}
-
-function createFileContext(editor: vscode.TextEditor): TaskContext {
-  const content = editor.document.getText();
-  if (content.trim().length === 0) {
-    throw new Error('Current file is empty. Use manual mode or add file content first.');
-  }
-
-  return {
-    source: 'file',
-    uri: getContextUri(editor.document),
-    languageId: editor.document.languageId,
-    content,
-  };
-}
-
 function getContextUri(document: vscode.TextDocument): string {
   return document.uri.scheme === 'file' ? document.uri.fsPath : document.uri.toString();
-}
-
-function getContextModeLabel(contextMode: ContextCaptureMode): string {
-  switch (contextMode) {
-    case 'manual':
-      return 'Manual only';
-    case 'selection':
-      return 'Current selection';
-    case 'file':
-      return 'Current file';
-    case 'auto':
-      return 'Auto selection/file';
-  }
 }
 
 function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: ContextCaptureMode): string {
@@ -515,12 +597,15 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
 
   const details = taskRequest.contexts
     .map((context: TaskContext) => {
-      const parts: string[] = [context.source];
+      const parts: string[] = [context.source, context.priority];
       if (context.languageId) {
         parts.push(context.languageId);
       }
       if (context.uri) {
         parts.push(context.uri);
+      }
+      if (context.truncated && context.originalLength) {
+        parts.push(`truncated=${context.content.length}/${context.originalLength}`);
       }
       return parts.join(' / ');
     })
@@ -812,6 +897,10 @@ function postTaskStatus(webview: vscode.Webview, message: Omit<TaskPanelStatusMe
   });
 }
 
+function postContextPreview(webview: vscode.Webview, message: ContextPreviewMessage): void {
+  void webview.postMessage(message);
+}
+
 function getTaskPanelHtml(webview: vscode.Webview): string {
   const nonce = getNonce();
 
@@ -913,6 +1002,18 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       .template-fields {
         display: grid;
         gap: 12px;
+      }
+
+      .preview-snippet {
+        margin: 0;
+        padding: 12px;
+        border-radius: 8px;
+        background: var(--vscode-textCodeBlock-background);
+        color: var(--vscode-textPreformat-foreground);
+        white-space: pre-wrap;
+        line-height: 1.5;
+        max-height: 180px;
+        overflow: auto;
       }
 
       .actions {
@@ -1136,12 +1237,13 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S05</p>
+        <p class="eyebrow">V1-S06</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
-          Use Command Palette entry to open panel, choose a task template or freeform mode, attach context, then submit from inside VS Code.
-          Current step adds template-driven task inputs for refactor, debug, and architecture analysis while keeping the existing output,
-          selected model, diagnostic state, cache state, execution path, trace, token usage, latency, cost estimate, and stage rerun flow.
+          Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
+          then submit from inside VS Code. Current step adds selection-first, current-file-first, and manual-only collection
+          with context priority, truncation warnings, and pre-send preview while keeping existing output, diagnostics, cache,
+          execution path, trace, token usage, latency, cost estimate, and stage rerun flow.
         </p>
       </header>
 
@@ -1159,13 +1261,18 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <div class="field-group">
           <label for="context-mode">Context mode</label>
           <select id="context-mode">
-            <option value="auto" selected>Auto: use selection, else current file</option>
-            <option value="manual">Manual only</option>
-            <option value="selection">Attach current selection</option>
-            <option value="file">Attach current file</option>
+            <option value="template-default" selected>Template default</option>
+            <option value="selection-first">Selection first, fallback to file</option>
+            <option value="file-first">Current file first, fallback to selection</option>
+            <option value="manual-only">Manual only</option>
           </select>
-          <span class="hint">Manual only prevents sending editor content. Auto prefers selection when available.</span>
+          <span class="hint" id="context-mode-hint">Template default chooses strategy from selected template.</span>
         </div>
+
+        <label class="checkbox-row" for="include-supporting-context">
+          <input id="include-supporting-context" type="checkbox" />
+          Include supporting context when available
+        </label>
 
         <div class="field-group" id="template-fields-block" hidden>
           <label>Template inputs</label>
@@ -1182,6 +1289,24 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <input id="ignore-cache" type="checkbox" />
           Ignore cache and force fresh run
         </label>
+      </section>
+
+      <section class="status-panel" id="context-preview-panel" aria-live="polite">
+        <div class="status-row">
+          <strong id="context-preview-headline">Context preview</strong>
+        </div>
+        <p class="status-detail" id="context-preview-detail">Refresh preview to inspect editor context before sending.</p>
+        <div class="actions">
+          <div class="action-buttons">
+            <button id="refresh-context-preview" type="button" class="secondary-button">Refresh Context Preview</button>
+          </div>
+          <span class="hint">Preview shows effective capture strategy, source, priority, and truncation.</span>
+        </div>
+        <div id="context-preview-warning-block" hidden>
+          <span class="preview-label">Context warnings</span>
+          <ul class="trace-list" id="context-preview-warnings"></ul>
+        </div>
+        <div class="result-grid" id="context-preview-list"></div>
       </section>
 
       <div class="actions">
@@ -1271,7 +1396,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <ol>
           <li>Run <strong>LLM Crane: Run Task</strong> from Command Palette.</li>
           <li>Choose freeform, refactor, debug, or architecture-analysis template and fill any required template inputs.</li>
-          <li>Choose manual-only, selection, file, or auto mode.</li>
+          <li>Choose template default, selection-first, current-file-first, or manual-only mode, then refresh preview if editor state changed.</li>
           <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
           <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor when available.</li>
         </ol>
@@ -1293,12 +1418,20 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const templateDescription = document.getElementById('task-template-description');
       const templateConstraints = document.getElementById('task-template-constraints');
       const contextModeInput = document.getElementById('context-mode');
+      const contextModeHint = document.getElementById('context-mode-hint');
+      const includeSupportingContextInput = document.getElementById('include-supporting-context');
       const templateFieldsBlock = document.getElementById('template-fields-block');
       const templateFields = document.getElementById('template-fields');
       const taskInput = document.getElementById('task-input');
       const ignoreCacheInput = document.getElementById('ignore-cache');
+      const refreshContextPreviewButton = document.getElementById('refresh-context-preview');
       const runTaskButton = document.getElementById('run-task');
       const rerunBypassButton = document.getElementById('rerun-bypass-cache');
+      const contextPreviewHeadline = document.getElementById('context-preview-headline');
+      const contextPreviewDetail = document.getElementById('context-preview-detail');
+      const contextPreviewWarningBlock = document.getElementById('context-preview-warning-block');
+      const contextPreviewWarnings = document.getElementById('context-preview-warnings');
+      const contextPreviewList = document.getElementById('context-preview-list');
       const statusPanel = document.getElementById('status-panel');
       const statusBadge = document.getElementById('status-badge');
       const statusHeadline = document.getElementById('status-headline');
@@ -1332,6 +1465,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
       function getSelectedTemplate() {
         return taskTemplates.find((template) => template.templateId === templateSelect.value);
+      }
+
+      function getTemplateDefaultStrategy() {
+        const template = getSelectedTemplate();
+        return template?.contextStrategy ?? {
+          mode: 'selection-first',
+          includeSupportingContext: false,
+          maxChars: 6000,
+        };
       }
 
       function getTemplateFieldInputId(templateId, fieldId) {
@@ -1417,6 +1559,101 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           ...template.inputFields.map((field) => createTemplateField(template, field, savedValues[field.fieldId] ?? '')),
         );
         taskInput.placeholder = 'Optional extra details, desired output shape, or edge cases.';
+      }
+
+      function syncContextControls(resetSupportingContext) {
+        const strategy = getTemplateDefaultStrategy();
+        const selectedMode = contextModeInput.value;
+        const effectiveMode = selectedMode === 'template-default' ? strategy.mode : selectedMode;
+
+        if (resetSupportingContext || selectedMode === 'template-default') {
+          includeSupportingContextInput.checked = strategy.includeSupportingContext;
+        }
+
+        if (effectiveMode === 'manual-only') {
+          includeSupportingContextInput.checked = false;
+          includeSupportingContextInput.disabled = true;
+        } else {
+          includeSupportingContextInput.disabled = false;
+        }
+
+        const modeDescription = selectedMode === 'template-default'
+          ? 'Template default: ' + strategy.mode + ' · max ' + strategy.maxChars.toLocaleString('en-US') + ' chars/context.'
+          : 'Override: ' + effectiveMode + ' · max ' + strategy.maxChars.toLocaleString('en-US') + ' chars/context.';
+        contextModeHint.textContent = modeDescription;
+      }
+
+      function renderContextPreview(message) {
+        contextPreviewHeadline.textContent = message.headline;
+        contextPreviewDetail.textContent = message.detail;
+
+        if (message.warnings && message.warnings.length > 0) {
+          contextPreviewWarningBlock.hidden = false;
+          contextPreviewWarnings.replaceChildren(
+            ...message.warnings.map((warning) => {
+              const item = document.createElement('li');
+              item.textContent = warning;
+              return item;
+            }),
+          );
+        } else {
+          contextPreviewWarningBlock.hidden = true;
+          contextPreviewWarnings.replaceChildren();
+        }
+
+        if (message.items && message.items.length > 0) {
+          contextPreviewList.replaceChildren(
+            ...message.items.map((item) => {
+              const card = document.createElement('div');
+              card.className = 'meta-card';
+
+              const label = document.createElement('span');
+              label.className = 'preview-label';
+              label.textContent = item.headline;
+              card.appendChild(label);
+
+              const detail = document.createElement('p');
+              detail.className = 'hint';
+              detail.textContent = item.detail;
+              card.appendChild(detail);
+
+              const preview = document.createElement('pre');
+              preview.className = 'preview-snippet';
+              preview.textContent = item.preview;
+              card.appendChild(preview);
+
+              return card;
+            }),
+          );
+        } else {
+          contextPreviewList.replaceChildren(
+            (() => {
+              const emptyCard = document.createElement('div');
+              emptyCard.className = 'meta-card';
+
+              const label = document.createElement('span');
+              label.className = 'preview-label';
+              label.textContent = message.blockingError ? 'Blocked' : 'No context';
+              emptyCard.appendChild(label);
+
+              const detail = document.createElement('p');
+              detail.className = 'meta-value';
+              detail.textContent = message.blockingError ? message.blockingError : 'No editor context will be attached.';
+              emptyCard.appendChild(detail);
+
+              return emptyCard;
+            })(),
+          );
+        }
+      }
+
+      function requestContextPreview() {
+        vscode.postMessage({
+          type: 'previewContext',
+          contextMode: contextModeInput.value,
+          templateId: templateSelect.value,
+          includeSupportingContext: includeSupportingContextInput.checked,
+        });
       }
 
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView) {
@@ -1519,9 +1756,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         const ignoreCache = ignoreCacheOverride ?? ignoreCacheInput.checked;
         const templateId = templateSelect.value;
         const templateValues = collectTemplateValues();
+        const includeSupportingContext = includeSupportingContextInput.checked;
         const submittedTask = value.trim() || (templateId === customTaskTemplateId ? '' : templateSelect.options[templateSelect.selectedIndex].textContent + ' template');
         setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', submittedTask, '', '');
-        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache, templateId, templateValues });
+        vscode.postMessage({ type: 'submitTask', value, contextMode, ignoreCache, templateId, templateValues, includeSupportingContext });
       }
 
       function submitRerun() {
@@ -1540,7 +1778,17 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         submitTask(true);
       });
       rerunStageButton.addEventListener('click', () => submitRerun());
-      templateSelect.addEventListener('change', () => renderTemplateFields());
+      refreshContextPreviewButton.addEventListener('click', () => requestContextPreview());
+      templateSelect.addEventListener('change', () => {
+        renderTemplateFields();
+        syncContextControls(true);
+        requestContextPreview();
+      });
+      contextModeInput.addEventListener('change', () => {
+        syncContextControls(false);
+        requestContextPreview();
+      });
+      includeSupportingContextInput.addEventListener('change', () => requestContextPreview());
       templateFields.addEventListener('input', () => {
         const template = getSelectedTemplate();
         if (!template) {
@@ -1556,14 +1804,19 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       });
 
       renderTemplateFields();
+      syncContextControls(true);
+      requestContextPreview();
 
       window.addEventListener('message', (event) => {
         const message = event.data;
-        if (message?.type !== 'taskStatus') {
+        if (message?.type === 'taskStatus') {
+          setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview, message.resultView);
           return;
         }
 
-        setStatus(message.status, message.headline, message.detail, message.submittedTask, message.requestPreview, message.resultView);
+        if (message?.type === 'contextPreview') {
+          renderContextPreview(message);
+        }
       });
     </script>
   </body>

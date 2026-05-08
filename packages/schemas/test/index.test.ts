@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema } from '../src/index';
+import { BUILT_IN_TASK_TEMPLATES, OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema } from '../src/index';
 
 describe('TaskRequestSchema', () => {
   it('parses minimal task request', () => {
@@ -32,6 +32,32 @@ describe('TaskRequestSchema', () => {
 
     expect(parsed.taskTemplate?.templateId).toBe('refactor');
     expect(parsed.taskTemplate?.values.goal).toBe('reduce duplication');
+  });
+
+  it('adds default context priority metadata when contexts are provided', () => {
+    const parsed = TaskRequestSchema.parse({
+      task: 'Review current file',
+      contexts: [
+        {
+          source: 'file',
+          uri: '/workspace/src/app.ts',
+          languageId: 'typescript',
+          content: 'export const value = 1;',
+        },
+      ],
+    });
+
+    expect(parsed.contexts[0]?.priority).toBe('primary');
+    expect(parsed.contexts[0]?.truncated).toBe(false);
+  });
+});
+
+describe('built-in task template metadata', () => {
+  it('includes context strategy for each built-in template', () => {
+    for (const template of BUILT_IN_TASK_TEMPLATES) {
+      expect(template.contextStrategy.maxChars).toBeGreaterThan(0);
+      expect(['selection-first', 'file-first', 'manual-only']).toContain(template.contextStrategy.mode);
+    }
   });
 });
 

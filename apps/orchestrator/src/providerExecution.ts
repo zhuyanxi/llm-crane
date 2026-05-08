@@ -38,12 +38,15 @@ export const EXECUTOR_SYSTEM_PROMPT = [
 ].join(' ');
 
 function formatContext(context: TaskContext, index: number): string {
-  const headerParts = [`Context ${index + 1}`, `source=${context.source}`];
+  const headerParts = [`Context ${index + 1}`, `source=${context.source}`, `priority=${context.priority}`];
   if (context.languageId) {
     headerParts.push(`language=${context.languageId}`);
   }
   if (context.uri) {
     headerParts.push(`uri=${context.uri}`);
+  }
+  if (context.truncated && context.originalLength) {
+    headerParts.push(`truncated=${context.content.length}/${context.originalLength}`);
   }
 
   return [headerParts.join(' | '), context.content].join('\n');

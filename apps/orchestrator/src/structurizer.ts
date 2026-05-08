@@ -40,12 +40,15 @@ function unique(items: string[]): string[] {
 }
 
 function summarizeContext(context: TaskContext): string {
-  const parts: string[] = [context.source];
+  const parts: string[] = [context.source, context.priority];
   if (context.languageId) {
     parts.push(context.languageId);
   }
   if (context.uri) {
     parts.push(context.uri);
+  }
+  if (context.truncated && context.originalLength) {
+    parts.push(`truncated=${context.content.length}/${context.originalLength}`);
   }
   return parts.join(' / ');
 }
