@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RuntimeConfig, TaskRequest, TaskResponse } from '@llm-crane/schemas';
 import { runTaskWithCache } from '../src/cachedTaskRunner';
-import { createTaskCacheKey, type CachedTaskRecord, type TaskCacheStore } from '../src/taskCache';
+import { createTaskCacheKey, createTaskCacheMetadata, type CachedTaskRecord, type TaskCacheStore } from '../src/taskCache';
 
 const runtimeConfig: RuntimeConfig = {
   defaultSimpleModel: 'gpt-4o-mini',
@@ -279,18 +279,23 @@ function createTaskCacheStore(): TaskCacheStore & {
   records: Map<string, CachedTaskRecord>;
   get: ReturnType<typeof vi.fn>;
   set: ReturnType<typeof vi.fn>;
+  delete: ReturnType<typeof vi.fn>;
 } {
   const records = new Map<string, CachedTaskRecord>();
 
   return {
     records,
     get: vi.fn((key: string) => records.get(key)),
-    set: vi.fn((key: string, response, storedAt: string) => {
+    set: vi.fn((key: string, response, storedAt: string, metadata) => {
       records.set(key, {
         key,
         storedAt,
         response,
+        metadata,
       });
+    }),
+    delete: vi.fn((key: string) => {
+      records.delete(key);
     }),
     close: vi.fn(),
   };
@@ -305,6 +310,7 @@ describe('runTaskWithCache', () => {
     taskCache.records.set(cacheKey, {
       key: cacheKey,
       storedAt: '2026-05-05T00:00:10.000Z',
+      metadata: createTaskCacheMetadata(runtimeConfig),
       response: {
         output: cachedResponse.output,
         routeDecision: cachedResponse.routeDecision,
@@ -345,6 +351,102 @@ describe('runTaskWithCache', () => {
     expect(response.trace.some((event) => event.stage === 'cache.lookup' && event.status === 'completed')).toBe(true);
     expect(response.trace.some((event) => event.stage === 'cache.write' && event.status === 'completed')).toBe(true);
     expect(taskCache.set).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates stale cache entries when ttl expired', async () => {
+    const taskCache = createTaskCacheStore();
+    const cacheKey = createTaskCacheKey(
+      {
+        ...runtimeConfig,
+        cachePolicy: {
+          ttlMs: 1_000,
+        },
+      },
+      baseTaskRequest,
+    );
+    const cachedResponse = createTaskResponse('stale output');
+    taskCache.records.set(cacheKey, {
+      key: cacheKey,
+      storedAt: '2026-05-05T00:00:00.000Z',
+      metadata: createTaskCacheMetadata({
+        ...runtimeConfig,
+        cachePolicy: {
+          ttlMs: 1_000,
+        },
+      }),
+      response: {
+        output: cachedResponse.output,
+        routeDecision: cachedResponse.routeDecision,
+        selectedProvider: cachedResponse.selectedProvider,
+        providerResult: cachedResponse.providerResult,
+        costEstimate: cachedResponse.costEstimate,
+      },
+    });
+
+    const pipelineSpy = vi.fn().mockResolvedValue(createTaskResponse('fresh after ttl'));
+
+    const response = await runTaskWithCache(
+      {
+        ...runtimeConfig,
+        cachePolicy: {
+          ttlMs: 1_000,
+        },
+      },
+      {} as never,
+      baseTaskRequest,
+      taskCache,
+      {
+        createTimestamp: () => '2026-05-05T00:00:02.000Z',
+        runTaskPipeline: pipelineSpy as never,
+      },
+    );
+
+    expect(response.output).toBe('fresh after ttl');
+    expect(response.cacheInfo?.status).toBe('miss');
+    expect(response.cacheInfo?.detail).toContain('ttl expired');
+    expect(response.trace.some((event) => event.stage === 'cache.invalidate' && event.status === 'completed')).toBe(true);
+    expect(taskCache.delete).toHaveBeenCalledWith(cacheKey);
+    expect(taskCache.set).toHaveBeenCalledTimes(1);
+    expect(pipelineSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('invalidates cache entries when prompt assets changed', async () => {
+    const taskCache = createTaskCacheStore();
+    const cacheKey = createTaskCacheKey(runtimeConfig, baseTaskRequest);
+    const cachedResponse = createTaskResponse('stale prompt output');
+
+    taskCache.records.set(cacheKey, {
+      key: cacheKey,
+      storedAt: '2026-05-05T00:00:10.000Z',
+      metadata: {
+        ...createTaskCacheMetadata(runtimeConfig),
+        promptVersion: 'stale-prompt-version',
+      },
+      response: {
+        output: cachedResponse.output,
+        routeDecision: cachedResponse.routeDecision,
+        selectedProvider: cachedResponse.selectedProvider,
+        providerResult: cachedResponse.providerResult,
+        costEstimate: cachedResponse.costEstimate,
+      },
+    });
+
+    const pipelineSpy = vi.fn().mockResolvedValue(createTaskResponse('fresh prompt output'));
+
+    const response = await runTaskWithCache(runtimeConfig, {} as never, baseTaskRequest, taskCache, {
+      createTimestamp: () => '2026-05-05T00:00:30.000Z',
+      runTaskPipeline: pipelineSpy as never,
+    });
+
+    expect(response.output).toBe('fresh prompt output');
+    expect(response.cacheInfo?.detail).toContain('prompt assets changed');
+    expect(
+      response.trace.some(
+        (event) => event.stage === 'cache.invalidate' && event.metadata?.invalidationReason === 'prompt-version',
+      ),
+    ).toBe(true);
+    expect(taskCache.delete).toHaveBeenCalledWith(cacheKey);
+    expect(pipelineSpy).toHaveBeenCalledTimes(1);
   });
 
   it('bypasses cache lookup when request asks for fresh run', async () => {

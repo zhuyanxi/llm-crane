@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RuntimeConfig, TaskRequest, TaskResponse } from '@llm-crane/schemas';
-import { createTaskCacheKey, SQLiteTaskCache } from '../src/taskCache';
+import { createTaskCacheKey, createTaskCacheMetadata, SQLiteTaskCache, validateCachedTaskRecord } from '../src/taskCache';
 
 const runtimeConfig: RuntimeConfig = {
   defaultSimpleModel: 'gpt-4o-mini',
@@ -88,13 +88,15 @@ describe('SQLiteTaskCache', () => {
     tempDirectories.push(directory);
     const cache = new SQLiteTaskCache(path.join(directory, 'task-cache.sqlite'));
 
-    cache.set('cache-key', persistedResponse, '2026-05-05T00:00:00.000Z');
+    cache.set('cache-key', persistedResponse, '2026-05-05T00:00:00.000Z', createTaskCacheMetadata(runtimeConfig));
     const record = cache.get('cache-key');
     cache.close();
 
     expect(record?.storedAt).toBe('2026-05-05T00:00:00.000Z');
     expect(record?.response.output).toBe('cached output');
     expect(record?.response.selectedProvider.modelId).toBe('gpt-4o-mini');
+    expect(record?.metadata?.schemaVersion).toBeDefined();
+    expect(record?.metadata?.promptVersion).toBeDefined();
   });
 });
 
@@ -107,5 +109,44 @@ describe('createTaskCacheKey', () => {
     });
 
     expect(defaultKey).toBe(bypassKey);
+  });
+
+  it('keeps cache fingerprint stable when only ttl policy changes', () => {
+    const defaultKey = createTaskCacheKey(runtimeConfig, baseTaskRequest);
+    const stricterKey = createTaskCacheKey(
+      {
+        ...runtimeConfig,
+        cachePolicy: {
+          ttlMs: 1_000,
+        },
+      },
+      baseTaskRequest,
+    );
+
+    expect(defaultKey).toBe(stricterKey);
+  });
+});
+
+describe('validateCachedTaskRecord', () => {
+  it('invalidates when template version changed', () => {
+    const validation = validateCachedTaskRecord(
+      runtimeConfig,
+      {
+        key: 'cache-key',
+        storedAt: '2026-05-05T00:00:00.000Z',
+        response: persistedResponse,
+        metadata: {
+          ...createTaskCacheMetadata(runtimeConfig),
+          templateVersion: 'stale-template-version',
+        },
+      },
+      '2026-05-05T00:00:10.000Z',
+    );
+
+    expect(validation.status).toBe('invalid');
+    if (validation.status === 'invalid') {
+      expect(validation.reason).toBe('template-version');
+      expect(validation.detail).toContain('task template definitions changed');
+    }
   });
 });

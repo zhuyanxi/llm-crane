@@ -1,9 +1,11 @@
 import { config as loadDotenv } from 'dotenv';
 import { getProviderIdForModel, getSupportedModelIdsForProvider, isSupportedModelId } from '@llm-crane/providers';
 import {
+  CachePolicySchema,
   ProviderFallbackPolicySchema,
   ProviderRetryPolicySchema,
   RuntimeConfigSchema,
+  type CachePolicy,
   type ProviderFallbackPolicy,
   type ProviderRetryPolicy,
   type ProviderRuntimeProfile,
@@ -21,6 +23,10 @@ const DEFAULT_PROVIDER_RETRY_POLICY: ProviderRetryPolicy = {
   backoffStrategy: 'exponential',
   baseDelayMs: 500,
   maxDelayMs: 4_000,
+};
+
+const DEFAULT_CACHE_POLICY: CachePolicy = {
+  ttlMs: 86_400_000,
 };
 
 const DEFAULT_PROVIDER_FALLBACK_POLICY: ProviderFallbackPolicy = {
@@ -110,6 +116,21 @@ function parseProviderFallbackPolicy(env: EnvSource): ProviderFallbackPolicy {
   }
 }
 
+function parseCachePolicy(env: EnvSource): CachePolicy {
+  if (env.LLM_CRANE_CACHE_TTL_MS === undefined) {
+    return DEFAULT_CACHE_POLICY;
+  }
+
+  try {
+    return CachePolicySchema.parse({
+      ttlMs: Number(env.LLM_CRANE_CACHE_TTL_MS),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ConfigurationError(`Invalid cache policy configuration: ${message}`);
+  }
+}
+
 function validateConfiguredFallbackModels(
   fallbackPolicy: ProviderFallbackPolicy,
   providerKeys: RuntimeConfig['providerKeys'],
@@ -181,6 +202,7 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
   };
   const runtimeProfiles = parseRuntimeProfiles(env);
   const providerRetry = parseProviderRetryPolicy(env);
+  const cachePolicy = parseCachePolicy(env);
   const providerFallback = parseProviderFallbackPolicy(env);
 
   if (Object.values(providerKeys).every((value) => !value) && runtimeProfiles.length === 0) {
@@ -205,6 +227,7 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     defaultSimpleModel,
     defaultComplexModel,
     transport: env.LLM_CRANE_TRANSPORT ?? 'stdio',
+    cachePolicy,
     logLevel: env.LLM_CRANE_LOG_LEVEL ?? 'info',
     providerRetry,
     providerFallback,

@@ -11,6 +11,9 @@ describe('loadRuntimeConfig', () => {
     expect(config.defaultSimpleModel).toBe('gpt-4o-mini');
     expect(config.defaultComplexModel).toBe('claude-3-5-sonnet-latest');
     expect(config.runtimeProfiles).toEqual([]);
+    expect(config.cachePolicy).toEqual({
+      ttlMs: 86_400_000,
+    });
     expect(config.providerRetry).toEqual({
       maxRetries: 2,
       backoffStrategy: 'exponential',
@@ -132,6 +135,18 @@ describe('loadRuntimeConfig', () => {
     });
   });
 
+  it('loads cache policy from env', () => {
+    const config = loadRuntimeConfig({
+      OPENAI_API_KEY: 'openai-key',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      LLM_CRANE_CACHE_TTL_MS: '60000',
+    });
+
+    expect(config.cachePolicy).toEqual({
+      ttlMs: 60000,
+    });
+  });
+
   it('loads provider fallback policy from env', () => {
     const config = loadRuntimeConfig({
       OPENAI_API_KEY: 'openai-key',
@@ -167,5 +182,15 @@ describe('loadRuntimeConfig', () => {
         LLM_CRANE_SIMPLE_FALLBACK_MODELS: 'unknown-model',
       }),
     ).toThrow('Unsupported model id: unknown-model');
+  });
+
+  it('throws on invalid cache ttl env', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        OPENAI_API_KEY: 'openai-key',
+        ANTHROPIC_API_KEY: 'anthropic-key',
+        LLM_CRANE_CACHE_TTL_MS: '-1',
+      }),
+    ).toThrow('Invalid cache policy configuration');
   });
 });

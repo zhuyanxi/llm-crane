@@ -11,7 +11,14 @@ import {
 import { buildCachedPipelineState } from './pipelineStateMachine';
 import { runTaskPipeline } from './pipelineRunner';
 import { createTaskCheckpoint } from './taskCheckpoint';
-import { createTaskCacheKey, toPersistedTaskResponse, type CachedTaskRecord, type TaskCacheStore } from './taskCache';
+import {
+  createTaskCacheKey,
+  createTaskCacheMetadata,
+  toPersistedTaskResponse,
+  validateCachedTaskRecord,
+  type CachedTaskRecord,
+  type TaskCacheStore,
+} from './taskCache';
 
 type TraceMetadata = Record<string, PipelineTraceMetadataValue>;
 
@@ -82,24 +89,24 @@ function updateTraceCount(trace: PipelineTraceEvent[]): void {
   };
 }
 
-function insertAfterRequestReceived(trace: PipelineTraceEvent[], event: PipelineTraceEvent): void {
+function insertAfterRequestReceived(trace: PipelineTraceEvent[], events: PipelineTraceEvent[]): void {
   const requestIndex = trace.findIndex((traceEvent) => traceEvent.stage === 'request.received');
   if (requestIndex === -1) {
-    trace.unshift(event);
+    trace.unshift(...events);
     return;
   }
 
-  trace.splice(requestIndex + 1, 0, event);
+  trace.splice(requestIndex + 1, 0, ...events);
 }
 
-function insertBeforePipelineFinish(trace: PipelineTraceEvent[], event: PipelineTraceEvent): void {
+function insertBeforePipelineFinish(trace: PipelineTraceEvent[], events: PipelineTraceEvent[]): void {
   const finishIndex = trace.findIndex((traceEvent) => traceEvent.stage === 'pipeline.finish');
   if (finishIndex === -1) {
-    trace.push(event);
+    trace.push(...events);
     return;
   }
 
-  trace.splice(finishIndex, 0, event);
+  trace.splice(finishIndex, 0, ...events);
 }
 
 function buildHitTrace(createTimestamp: () => string, taskRequest: TaskRequest, cachedRecord: CachedTaskRecord): PipelineTraceEvent[] {
@@ -218,17 +225,17 @@ function annotateLiveResponse(
   taskRequest: TaskRequest,
   cacheKey: string,
   taskResponse: TaskResponse,
-  cacheLookupEvent: PipelineTraceEvent,
+  cacheLookupEvents: PipelineTraceEvent[],
   cacheInfoDetail: string,
   cacheInfoStatus: 'miss' | 'bypassed',
   cachedAt?: string,
-  cacheWriteEvent?: PipelineTraceEvent,
+  cacheWriteEvents: PipelineTraceEvent[] = [],
 ): TaskResponse {
   const trace = [...taskResponse.trace];
-  insertAfterRequestReceived(trace, cacheLookupEvent);
+  insertAfterRequestReceived(trace, cacheLookupEvents);
 
-  if (cacheWriteEvent) {
-    insertBeforePipelineFinish(trace, cacheWriteEvent);
+  if (cacheWriteEvents.length > 0) {
+    insertBeforePipelineFinish(trace, cacheWriteEvents);
   }
 
   updateTraceCount(trace);
@@ -286,6 +293,29 @@ function createCacheWriteEvent(
   );
 }
 
+function createCacheInvalidationEvent(
+  createTimestamp: () => string,
+  key: string,
+  cachedRecord: CachedTaskRecord,
+  detail: string,
+  reason: string,
+): PipelineTraceEvent {
+  return createTraceEvent(
+    createTimestamp,
+    'cache.invalidate',
+    'completed',
+    detail,
+    compactMetadata({
+      ...createCacheMetadata(key, 'miss'),
+      invalidationReason: reason,
+      storedAt: cachedRecord.storedAt,
+      schemaVersion: cachedRecord.metadata?.schemaVersion,
+      promptVersion: cachedRecord.metadata?.promptVersion,
+      templateVersion: cachedRecord.metadata?.templateVersion,
+    }),
+  );
+}
+
 export async function runTaskWithCache(
   config: RuntimeConfig,
   providerRegistry: ProviderRegistry,
@@ -298,12 +328,49 @@ export async function runTaskWithCache(
     ...overrides,
   };
   const cacheKey = createTaskCacheKey(config, taskRequest);
+  let cacheLookupEvents: PipelineTraceEvent[] = [];
+  let cacheInfoDetail =
+    taskRequest.cacheMode === 'bypass'
+      ? 'Cache bypassed; executed live pipeline response.'
+      : 'Cache miss; executed live pipeline response.';
 
   if (taskRequest.cacheMode !== 'bypass') {
     try {
       const cachedRecord = taskCache.get(cacheKey);
       if (cachedRecord) {
-        return buildCachedTaskResponse(dependencies.createTimestamp, taskRequest, cachedRecord);
+        const validation = validateCachedTaskRecord(config, cachedRecord, dependencies.createTimestamp());
+        if (validation.status === 'valid') {
+          return buildCachedTaskResponse(dependencies.createTimestamp, taskRequest, cachedRecord);
+        }
+
+        taskCache.delete(cacheKey);
+        cacheLookupEvents = [
+          createTraceEvent(
+            dependencies.createTimestamp,
+            'cache.lookup',
+            'completed',
+            `Cache lookup found stale entry; executing pipeline. ${validation.detail}`,
+            createCacheMetadata(cacheKey, 'miss'),
+          ),
+          createCacheInvalidationEvent(
+            dependencies.createTimestamp,
+            cacheKey,
+            cachedRecord,
+            `Cache invalidated because ${validation.detail}.`,
+            validation.reason,
+          ),
+        ];
+        cacheInfoDetail = `Cache stale; ${validation.detail}; executed live pipeline response.`;
+      } else {
+        cacheLookupEvents = [
+          createTraceEvent(
+            dependencies.createTimestamp,
+            'cache.lookup',
+            'completed',
+            'Cache miss; executing pipeline.',
+            createCacheMetadata(cacheKey, 'miss'),
+          ),
+        ];
       }
     } catch (error) {
       const taskResponse = await dependencies.runTaskPipeline(config, providerRegistry, taskRequest, {
@@ -315,101 +382,104 @@ export async function runTaskWithCache(
         taskRequest,
         cacheKey,
         taskResponse,
-        createTraceEvent(
-          dependencies.createTimestamp,
-          'cache.lookup',
-          'failed',
-          `Cache lookup failed; executing pipeline. ${message}`,
-          createCacheMetadata(cacheKey, 'miss'),
-        ),
+        [
+          createTraceEvent(
+            dependencies.createTimestamp,
+            'cache.lookup',
+            'failed',
+            `Cache lookup failed; executing pipeline. ${message}`,
+            createCacheMetadata(cacheKey, 'miss'),
+          ),
+        ],
         `Cache lookup failed; live pipeline response returned. ${message}`,
         'miss',
       );
     }
+  } else {
+    cacheLookupEvents = [
+      createTraceEvent(
+        dependencies.createTimestamp,
+        'cache.lookup',
+        'skipped',
+        'Cache bypassed by request; executing pipeline.',
+        createCacheMetadata(cacheKey, 'bypassed'),
+      ),
+    ];
   }
 
   const taskResponse = await dependencies.runTaskPipeline(config, providerRegistry, taskRequest, {
     createTimestamp: dependencies.createTimestamp,
   });
 
-  const lookupEvent =
-    taskRequest.cacheMode === 'bypass'
-      ? createTraceEvent(
-          dependencies.createTimestamp,
-          'cache.lookup',
-          'skipped',
-          'Cache bypassed by request; executing pipeline.',
-          createCacheMetadata(cacheKey, 'bypassed'),
-        )
-      : createTraceEvent(
-          dependencies.createTimestamp,
-          'cache.lookup',
-          'completed',
-          'Cache miss; executing pipeline.',
-          createCacheMetadata(cacheKey, 'miss'),
-        );
-
-  let cacheWriteEvent: PipelineTraceEvent | undefined;
-  let cacheInfoDetail =
-    taskRequest.cacheMode === 'bypass'
-      ? 'Cache bypassed; executed live pipeline response.'
-      : 'Cache miss; executed live pipeline response.';
+  let cacheWriteEvents: PipelineTraceEvent[] = [];
   let cachedAt: string | undefined;
 
   if (taskResponse.providerResult.status === 'completed') {
     const storedAt = dependencies.createTimestamp();
 
     try {
-      taskCache.set(cacheKey, toPersistedTaskResponse(taskResponse), storedAt);
+      taskCache.set(cacheKey, toPersistedTaskResponse(taskResponse), storedAt, createTaskCacheMetadata(config));
       cachedAt = storedAt;
-      cacheWriteEvent = createCacheWriteEvent(
-        dependencies.createTimestamp,
-        cacheKey,
-        taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
-        'completed',
-        'Stored fresh completed task response in SQLite cache.',
-        storedAt,
-      );
+      cacheWriteEvents = [
+        createCacheWriteEvent(
+          dependencies.createTimestamp,
+          cacheKey,
+          taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
+          'completed',
+          'Stored fresh completed task response in SQLite cache.',
+          storedAt,
+        ),
+      ];
       cacheInfoDetail =
         taskRequest.cacheMode === 'bypass'
-          ? 'Cache bypassed; executed live pipeline and refreshed SQLite cache.'
-          : 'Cache miss; executed live pipeline and stored fresh SQLite cache entry.';
+          ? 'Cache bypassed; executed live pipeline and refreshed SQLite cache entry.'
+          : cacheInfoDetail.startsWith('Cache stale;')
+            ? `${cacheInfoDetail} Refreshed SQLite cache entry.`
+            : 'Cache miss; executed live pipeline and stored fresh SQLite cache entry.';
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown cache write error';
-      cacheWriteEvent = createCacheWriteEvent(
-        dependencies.createTimestamp,
-        cacheKey,
-        taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
-        'failed',
-        `SQLite cache write failed; primary response kept. ${message}`,
-      );
+      cacheWriteEvents = [
+        createCacheWriteEvent(
+          dependencies.createTimestamp,
+          cacheKey,
+          taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
+          'failed',
+          `SQLite cache write failed; primary response kept. ${message}`,
+        ),
+      ];
       cacheInfoDetail =
         taskRequest.cacheMode === 'bypass'
           ? `Cache bypassed; executed live pipeline but SQLite write failed. ${message}`
-          : `Cache miss; executed live pipeline but SQLite write failed. ${message}`;
+          : cacheInfoDetail.startsWith('Cache stale;')
+            ? `${cacheInfoDetail} SQLite write failed. ${message}`
+            : `Cache miss; executed live pipeline but SQLite write failed. ${message}`;
     }
   } else {
-    cacheWriteEvent = createCacheWriteEvent(
-      dependencies.createTimestamp,
-      cacheKey,
-      taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
-      'skipped',
-      'Provider execution failed; cache store skipped.',
-    );
+    cacheWriteEvents = [
+      createCacheWriteEvent(
+        dependencies.createTimestamp,
+        cacheKey,
+        taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
+        'skipped',
+        'Provider execution failed; cache store skipped.',
+      ),
+    ];
     cacheInfoDetail =
       taskRequest.cacheMode === 'bypass'
         ? 'Cache bypassed; provider execution failed, so response was not cached.'
-        : 'Cache miss; provider execution failed, so response was not cached.';
+        : cacheInfoDetail.startsWith('Cache stale;')
+          ? `${cacheInfoDetail} Provider execution failed, so refreshed response was not cached.`
+          : 'Cache miss; provider execution failed, so response was not cached.';
   }
 
   return annotateLiveResponse(
     taskRequest,
     cacheKey,
     taskResponse,
-    lookupEvent,
+    cacheLookupEvents,
     cacheInfoDetail,
     taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'miss',
     cachedAt,
-    cacheWriteEvent,
+    cacheWriteEvents,
   );
 }

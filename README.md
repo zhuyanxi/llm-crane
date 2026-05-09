@@ -21,6 +21,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Verification failures now surface dedicated panel actions so user can retry executor, approve automatic model upgrade with recorded extra cost, or manually confirm current result.
 - Retriable provider failures now retry automatically with configurable fixed or exponential backoff, and each scheduled retry is recorded in trace metadata.
 - Preferred model can now fall back to configured backup model per simple or complex tier, with fallback reason visible in selected-model detail and session history tags.
+- Cache now stores schema, prompt, and template metadata, invalidates stale rows on TTL or version drift, and records stale reason before refreshing live output.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -76,7 +77,7 @@ Run inside VS Code:
 - Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
 - Execution mode summary showing full run versus stage rerun, plus retained trace history count
 - Diagnostic summary when request fails or returns failure state
-- Cache hit, miss, or bypassed state
+- Cache hit, miss, or bypassed state, including stale-cache reason when invalidation forced recompute
 - Execution trace summary
 - Token usage, latency, and cost estimate
 
@@ -90,6 +91,7 @@ Routing and runtime:
 - `LLM_CRANE_COMPLEX_MODEL`: default complex-path model
 - `LLM_CRANE_RUNTIME_PROFILES`: optional JSON array of runtime descriptors for hosted or local runtimes; each entry declares `runtimeId`, `providerId`, `deploymentMode`, `apiFamily`, `baseUrl`, `models`, and optional auth fields
 - `LLM_CRANE_CACHE_PATH`: optional SQLite file path; default is extension local storage path
+- `LLM_CRANE_CACHE_TTL_MS`: optional cache TTL in milliseconds; default `86400000` (24h), set `0` to disable TTL expiry
 - `LLM_CRANE_TRANSPORT`: current V0 transport, `stdio`
 - `LLM_CRANE_LOG_LEVEL`: runtime log level
 - `LLM_CRANE_PROVIDER_MAX_RETRIES`: optional max retry count for retriable provider failures; default `2`
@@ -244,7 +246,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - `taskResult.checkpoint` carries resumable task request, executor output, provider result, pipeline state, and trace history for stage rerun API
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`
-- Cache uses SQLite-backed local storage with stable task fingerprint and `cache.lookup` / `cache.hit` trace stages
+- Cache uses SQLite-backed local storage with stable task fingerprint, persisted schema or prompt or template metadata, TTL invalidation, and `cache.lookup` / `cache.hit` / `cache.invalidate` trace stages
 - Diagnostics classify failures into `configuration`, `provider`, `schema`, and `internal`
 - Provider layer stays generic through shared `ModelProvider` contract and registry
 

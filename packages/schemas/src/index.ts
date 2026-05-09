@@ -180,6 +180,10 @@ export const ProviderFallbackPolicySchema = z.object({
   complex: z.array(z.string().min(1)).default([]),
 });
 
+export const CachePolicySchema = z.object({
+  ttlMs: z.number().int().nonnegative(),
+});
+
 export const PipelineTraceStatusSchema = z.enum(['pending', 'running', 'retrying', 'completed', 'failed', 'skipped']);
 
 export const PipelineTraceMetadataValueSchema = z.union([z.string(), z.number(), z.boolean()]);
@@ -825,6 +829,7 @@ export const RuntimeConfigSchema = z.object({
   defaultComplexModel: z.string().min(1),
   transport: TransportSchema.default('stdio'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  cachePolicy: CachePolicySchema.optional(),
   providerRetry: ProviderRetryPolicySchema.optional(),
   providerFallback: ProviderFallbackPolicySchema.optional(),
   providerKeys: z.object({
@@ -853,6 +858,7 @@ export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type RetryBackoffStrategy = z.infer<typeof RetryBackoffStrategySchema>;
 export type ProviderRetryPolicy = z.infer<typeof ProviderRetryPolicySchema>;
 export type ProviderFallbackPolicy = z.infer<typeof ProviderFallbackPolicySchema>;
+export type CachePolicy = z.infer<typeof CachePolicySchema>;
 export type CacheStatus = z.infer<typeof CacheStatusSchema>;
 export type DiagnosticCategory = z.infer<typeof DiagnosticCategorySchema>;
 export type Diagnostic = z.infer<typeof DiagnosticSchema>;
