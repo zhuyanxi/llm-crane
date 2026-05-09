@@ -17,6 +17,11 @@ describe('loadRuntimeConfig', () => {
       baseDelayMs: 500,
       maxDelayMs: 4000,
     });
+    expect(config.providerFallback).toEqual({
+      enabled: true,
+      simple: [],
+      complex: [],
+    });
   });
 
   it('throws when provider keys are missing', () => {
@@ -127,6 +132,22 @@ describe('loadRuntimeConfig', () => {
     });
   });
 
+  it('loads provider fallback policy from env', () => {
+    const config = loadRuntimeConfig({
+      OPENAI_API_KEY: 'openai-key',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      LLM_CRANE_ENABLE_PROVIDER_FALLBACK: 'true',
+      LLM_CRANE_SIMPLE_FALLBACK_MODELS: 'claude-3-5-sonnet-latest',
+      LLM_CRANE_COMPLEX_FALLBACK_MODELS: 'gpt-4o-mini',
+    });
+
+    expect(config.providerFallback).toEqual({
+      enabled: true,
+      simple: ['claude-3-5-sonnet-latest'],
+      complex: ['gpt-4o-mini'],
+    });
+  });
+
   it('throws on invalid provider retry policy env', () => {
     expect(() =>
       loadRuntimeConfig({
@@ -136,5 +157,15 @@ describe('loadRuntimeConfig', () => {
         LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS: '10',
       }),
     ).toThrow('Invalid provider retry configuration');
+  });
+
+  it('throws on invalid provider fallback model env', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        OPENAI_API_KEY: 'openai-key',
+        ANTHROPIC_API_KEY: 'anthropic-key',
+        LLM_CRANE_SIMPLE_FALLBACK_MODELS: 'unknown-model',
+      }),
+    ).toThrow('Unsupported model id: unknown-model');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createProviderRegistry, type FetchLike } from '@llm-crane/providers';
+import { ProviderInvocationError, createProviderRegistry, type FetchLike } from '@llm-crane/providers';
 import type { RuntimeConfig, TaskRequest } from '@llm-crane/schemas';
 import { runTaskPipeline } from '../src/pipelineRunner';
 
@@ -601,7 +601,7 @@ describe('runTaskPipeline', () => {
       invoke: vi
         .fn()
         .mockRejectedValue(
-          new (await import('@llm-crane/providers')).ProviderInvocationError('Rate limit exceeded', {
+          new ProviderInvocationError('Rate limit exceeded', {
             providerId: 'openai',
             code: 'rate_limit',
             retriable: true,
@@ -649,6 +649,118 @@ describe('runTaskPipeline', () => {
     expect(response.diagnostic?.category).toBe('provider');
     expect(response.diagnostic?.code).toBe('provider.rate_limit');
     expect(response.costEstimate.status).toBe('unknown');
+  });
+
+  it('falls back to configured backup model after preferred complex model becomes unavailable', async () => {
+    const providerRegistry = {
+      invoke: vi.fn(async (request: { modelId: string }) => {
+        if (request.modelId === 'claude-3-5-sonnet-latest') {
+          throw new ProviderInvocationError('Selected model unavailable', {
+            providerId: 'anthropic',
+            code: 'unsupported_model',
+            retriable: false,
+            statusCode: 404,
+          });
+        }
+
+        return {
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          outputText: 'fallback result',
+          usage: {
+            inputTokens: 120,
+            outputTokens: 40,
+            totalTokens: 160,
+          },
+          latencyMs: 180,
+        };
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      {
+        ...runtimeConfig,
+        providerFallback: {
+          enabled: true,
+          simple: [],
+          complex: ['gpt-4o-mini'],
+        },
+      },
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            languageId: 'markdown',
+            content: 'Repo-wide architecture scan.',
+          },
+        ],
+      },
+      {
+        verifyTaskOutput: async () => createVerifierResult(),
+      },
+    );
+
+    const fallbackEvent = response.trace.find((event) => event.stage === 'executor.fallback');
+
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
+    expect(response.providerResult.status).toBe('completed');
+    expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
+    expect(response.providerResult.modelId).toBe('gpt-4o-mini');
+    expect(response.selectedProvider.reason).toContain('Automatic fallback switched execution from claude-3-5-sonnet-latest to gpt-4o-mini');
+    expect(response.costEstimate.modelId).toBe('gpt-4o-mini');
+    expect(fallbackEvent?.status).toBe('retrying');
+    expect(fallbackEvent?.metadata.fromModelId).toBe('claude-3-5-sonnet-latest');
+    expect(fallbackEvent?.metadata.toModelId).toBe('gpt-4o-mini');
+    expect(fallbackEvent?.metadata.errorCode).toBe('unsupported_model');
+  });
+
+  it('keeps provider failure when automatic fallback is disabled', async () => {
+    const providerRegistry = {
+      invoke: vi.fn(async () => {
+        throw new ProviderInvocationError('Selected model unavailable', {
+          providerId: 'anthropic',
+          code: 'unsupported_model',
+          retriable: false,
+          statusCode: 404,
+        });
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      {
+        ...runtimeConfig,
+        providerFallback: {
+          enabled: false,
+          simple: [],
+          complex: ['gpt-4o-mini'],
+        },
+      },
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            languageId: 'markdown',
+            content: 'Repo-wide architecture scan.',
+          },
+        ],
+      },
+    );
+
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(1);
+    expect(response.providerResult.status).toBe('failed');
+    expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
+    expect(response.trace.some((event) => event.stage === 'executor.fallback')).toBe(false);
+    expect(response.diagnostic?.code).toBe('provider.unsupported_model');
   });
 
   it('runs simple path end to end through ollama runtime profile', async () => {

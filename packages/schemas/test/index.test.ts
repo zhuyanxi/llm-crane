@@ -154,6 +154,11 @@ describe('RuntimeConfigSchema', () => {
         baseDelayMs: 500,
         maxDelayMs: 4000,
       },
+      providerFallback: {
+        enabled: true,
+        simple: ['claude-3-5-sonnet-latest'],
+        complex: ['gpt-4o-mini'],
+      },
       providerKeys: {
         anthropic: 'sk-anthropic',
       },
@@ -194,6 +199,11 @@ describe('RuntimeConfigSchema', () => {
     expect(parsed.runtimeProfiles[0]?.headers).toEqual({ 'X-Client': 'llm-crane' });
     expect(parsed.runtimeProfiles[1]?.providerId).toBe('ollama');
     expect(parsed.runtimeProfiles[1]?.apiFamily).toBe('ollama');
+    expect(parsed.providerFallback).toEqual({
+      enabled: true,
+      simple: ['claude-3-5-sonnet-latest'],
+      complex: ['gpt-4o-mini'],
+    });
   });
 
   it('parses provider retry policy and rejects invalid delay window', () => {

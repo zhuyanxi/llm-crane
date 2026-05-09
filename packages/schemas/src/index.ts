@@ -174,6 +174,12 @@ export const ProviderRetryPolicySchema = z.object({
   }
 });
 
+export const ProviderFallbackPolicySchema = z.object({
+  enabled: z.boolean().default(true),
+  simple: z.array(z.string().min(1)).default([]),
+  complex: z.array(z.string().min(1)).default([]),
+});
+
 export const PipelineTraceStatusSchema = z.enum(['pending', 'running', 'retrying', 'completed', 'failed', 'skipped']);
 
 export const PipelineTraceMetadataValueSchema = z.union([z.string(), z.number(), z.boolean()]);
@@ -820,6 +826,7 @@ export const RuntimeConfigSchema = z.object({
   transport: TransportSchema.default('stdio'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   providerRetry: ProviderRetryPolicySchema.optional(),
+  providerFallback: ProviderFallbackPolicySchema.optional(),
   providerKeys: z.object({
     openai: z.string().min(1).optional(),
     anthropic: z.string().min(1).optional(),
@@ -845,6 +852,7 @@ export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type RetryBackoffStrategy = z.infer<typeof RetryBackoffStrategySchema>;
 export type ProviderRetryPolicy = z.infer<typeof ProviderRetryPolicySchema>;
+export type ProviderFallbackPolicy = z.infer<typeof ProviderFallbackPolicySchema>;
 export type CacheStatus = z.infer<typeof CacheStatusSchema>;
 export type DiagnosticCategory = z.infer<typeof DiagnosticCategorySchema>;
 export type Diagnostic = z.infer<typeof DiagnosticSchema>;

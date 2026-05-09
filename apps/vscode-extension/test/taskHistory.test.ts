@@ -256,4 +256,78 @@ describe('buildTaskHistoryEntryView', () => {
 
     expect(historyEntry.tags).toEqual(['complex', 'cache:miss', 'full', 'verify:fail', 'failed']);
   });
+
+  it('adds fallback tag when trace records executor fallback event', () => {
+    const historyEntry = buildTaskHistoryEntryView(
+      'run-4',
+      'Analyze architecture after primary model fallback',
+      {
+        routeDecision: {
+          status: 'routed',
+          route: 'complex',
+          reason: 'Wide scope',
+          confidence: 0.75,
+          complexityScore: 8,
+          scoreBreakdown: [],
+          strategy: 'rules-v1',
+        },
+        selectedProvider: {
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          reason: 'Automatic fallback switched execution from claude-3-5-sonnet-latest to gpt-4o-mini.',
+        },
+        runInfo: {
+          mode: 'full',
+          reusedCheckpointStages: [],
+          historyTraceCount: 0,
+          historyTransitionCount: 0,
+          detail: 'Full pipeline run.',
+        },
+        cacheInfo: {
+          status: 'miss',
+          key: 'jkl',
+          storage: 'sqlite',
+          detail: 'cache miss',
+        },
+        providerResult: {
+          status: 'completed',
+          providerId: 'openai',
+          modelId: 'gpt-4o-mini',
+          outputText: 'fallback result',
+        },
+        checkpoint: {
+          taskRequest: {
+            task: 'Analyze architecture after primary model fallback',
+            qualityBar: 'high',
+            cacheMode: 'default',
+            contexts: [],
+            constraints: [],
+          },
+          pipeline: {
+            version: 'v1',
+            graph: 'complex-v1',
+            route: 'complex',
+            state: 'completed',
+            stages: [],
+            transitions: [],
+          },
+          trace: [],
+          capturedAt: '2026-05-09T12:00:00.000Z',
+        },
+        trace: [
+          {
+            stage: 'executor.fallback',
+            status: 'retrying',
+            timestamp: '2026-05-09T12:00:00.000Z',
+            metadata: {
+              fromModelId: 'claude-3-5-sonnet-latest',
+              toModelId: 'gpt-4o-mini',
+            },
+          },
+        ],
+      } satisfies Pick<TaskResponse, 'routeDecision' | 'selectedProvider' | 'runInfo' | 'cacheInfo' | 'providerResult' | 'checkpoint' | 'trace'>,
+    );
+
+    expect(historyEntry.tags).toEqual(['complex', 'cache:miss', 'full', 'fallback']);
+  });
 });

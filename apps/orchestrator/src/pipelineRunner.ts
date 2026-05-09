@@ -94,6 +94,15 @@ type ResolvedProviderTarget = {
   apiFamily?: ProviderApiFamily;
 };
 
+type ModelSelectionTier = 'simple' | 'complex' | 'specific';
+
+type ResolvedModelSelection = {
+  modelId: string;
+  selectionTier: ModelSelectionTier;
+  overrideMode?: 'simple-default' | 'complex-default' | 'specific';
+  reason: string;
+};
+
 type TraceAddOptions = {
   metadata?: TraceMetadata;
   error?: PipelineTraceError;
@@ -223,15 +232,12 @@ function getModelIdForRoute(config: RuntimeConfig, routeDecision: RouteDecision)
   return routeDecision.route === 'simple' ? config.defaultSimpleModel : config.defaultComplexModel;
 }
 
-function resolveModelSelection(config: RuntimeConfig, taskRequest: TaskRequest, routeDecision: RouteDecision): {
-  modelId: string;
-  overrideMode?: 'simple-default' | 'complex-default' | 'specific';
-  reason: string;
-} {
+function resolveModelSelection(config: RuntimeConfig, taskRequest: TaskRequest, routeDecision: RouteDecision): ResolvedModelSelection {
   const override = taskRequest.policyOverrides?.modelOverride;
   if (!override) {
     return {
       modelId: getModelIdForRoute(config, routeDecision),
+      selectionTier: routeDecision.route,
       reason: routeDecision.reason,
     };
   }
@@ -240,22 +246,65 @@ function resolveModelSelection(config: RuntimeConfig, taskRequest: TaskRequest, 
     case 'simple-default':
       return {
         modelId: config.defaultSimpleModel,
+        selectionTier: 'simple',
         overrideMode: override.mode,
         reason: `Manual override pinned execution to simple default model ${config.defaultSimpleModel} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
       };
     case 'complex-default':
       return {
         modelId: config.defaultComplexModel,
+        selectionTier: 'complex',
         overrideMode: override.mode,
         reason: `Manual override pinned execution to complex default model ${config.defaultComplexModel} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
       };
     case 'specific':
       return {
         modelId: override.modelId,
+        selectionTier: 'specific',
         overrideMode: override.mode,
         reason: `Manual override pinned execution to specific model ${override.modelId} while route remained ${routeDecision.route}. Route reason: ${routeDecision.reason}`,
       };
   }
+}
+
+function resolveFallbackCandidates(config: RuntimeConfig, modelSelection: ResolvedModelSelection): string[] {
+  const fallbackPolicy = config.providerFallback;
+  if (!fallbackPolicy?.enabled || modelSelection.selectionTier === 'specific') {
+    return [];
+  }
+
+  const configuredCandidates = modelSelection.selectionTier === 'simple'
+    ? fallbackPolicy.simple
+    : fallbackPolicy.complex;
+
+  return [...new Set(configuredCandidates.filter((candidate) => candidate !== modelSelection.modelId))];
+}
+
+function isFallbackEligibleProviderError(providerResult: ProviderExecutionResult): boolean {
+  if (providerResult.status !== 'failed' || !providerResult.error) {
+    return false;
+  }
+
+  switch (providerResult.error.code) {
+    case 'rate_limit':
+    case 'timeout':
+    case 'network':
+    case 'upstream':
+    case 'unsupported_model':
+    case 'provider_not_configured':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function buildFallbackSelectionReason(
+  currentReason: string,
+  fromModelId: string,
+  toModelId: string,
+  providerResult: ProviderExecutionResult,
+): string {
+  return `${currentReason} Automatic fallback switched execution from ${fromModelId} to ${toModelId} after ${providerResult.error?.code ?? 'unknown'}: ${providerResult.error?.message ?? 'Unknown provider failure.'}`;
 }
 
 function resolveProviderTarget(providerRegistry: ProviderRegistry, modelId: string): ResolvedProviderTarget {
@@ -872,9 +921,11 @@ export async function runTaskPipeline(
   }
 
   const modelSelection = resolveModelSelection(config, taskRequest, routeDecision);
+  const fallbackCandidates = resolveFallbackCandidates(config, modelSelection);
   const reusedExecutorResult = shouldReuseCheckpointStage(runMode, 'executor') ? rerunRequest?.checkpoint.providerResult : undefined;
-  const modelId = reusedExecutorResult?.modelId ?? modelSelection.modelId;
-  const providerTarget = resolveProviderTarget(providerRegistry, modelId);
+  let modelId = reusedExecutorResult?.modelId ?? modelSelection.modelId;
+  let providerTarget = resolveProviderTarget(providerRegistry, modelId);
+  let selectedProviderReason = modelSelection.reason;
   const providerId = providerTarget.providerId;
   pipelineMachine.updateContext({
     providerTarget,
@@ -953,7 +1004,7 @@ export async function runTaskPipeline(
         },
       );
 
-      providerResult = await dependencies.invokeRoutedProvider(
+      const invokeSelectedModel = async (): Promise<ProviderExecutionResult> => dependencies.invokeRoutedProvider(
         providerRegistry,
         modelId,
         taskRequest,
@@ -992,6 +1043,43 @@ export async function runTaskPipeline(
           },
         },
       );
+
+      providerResult = await invokeSelectedModel();
+
+      let fallbackAttempt = 0;
+      const pendingFallbackCandidates = [...fallbackCandidates];
+      while (providerResult.status === 'failed' && isFallbackEligibleProviderError(providerResult) && pendingFallbackCandidates.length > 0) {
+        const failedModelId = modelId;
+        const nextModelId = pendingFallbackCandidates.shift() as string;
+        fallbackAttempt += 1;
+        trace.add(
+          'executor.fallback',
+          'retrying',
+          `attempt=${fallbackAttempt}; from=${failedModelId}; to=${nextModelId}; error=${providerResult.error?.code ?? 'unknown'}`,
+          {
+            metadata: compactMetadata({
+              attempt: fallbackAttempt,
+              fromModelId: failedModelId,
+              toModelId: nextModelId,
+              route: routeDecision.route,
+              providerId: providerResult.providerId,
+              errorCode: providerResult.error?.code ?? 'unknown',
+              fallbackEnabled: config.providerFallback?.enabled ?? false,
+            }),
+            error: providerResult.error
+              ? {
+                  code: providerResult.error.code,
+                  message: providerResult.error.message,
+                }
+              : undefined,
+          },
+        );
+        modelId = nextModelId;
+        providerTarget = resolveProviderTarget(providerRegistry, modelId);
+        selectedProviderReason = buildFallbackSelectionReason(selectedProviderReason, failedModelId, nextModelId, providerResult);
+        providerResult = await invokeSelectedModel();
+      }
+
       pipelineMachine.updateContext({
         providerResult,
       });
@@ -1347,7 +1435,7 @@ export async function runTaskPipeline(
       deploymentMode: providerTarget.deploymentMode,
       apiFamily: providerTarget.apiFamily,
       modelId,
-      reason: modelSelection.reason,
+        reason: selectedProviderReason,
       confidence: routeDecision.confidence,
     },
     providerResult,

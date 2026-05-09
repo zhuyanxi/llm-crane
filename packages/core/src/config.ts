@@ -1,6 +1,14 @@
 import { config as loadDotenv } from 'dotenv';
 import { getProviderIdForModel, getSupportedModelIdsForProvider, isSupportedModelId } from '@llm-crane/providers';
-import { ProviderRetryPolicySchema, RuntimeConfigSchema, type ProviderRetryPolicy, type ProviderRuntimeProfile, type RuntimeConfig } from '@llm-crane/schemas';
+import {
+  ProviderFallbackPolicySchema,
+  ProviderRetryPolicySchema,
+  RuntimeConfigSchema,
+  type ProviderFallbackPolicy,
+  type ProviderRetryPolicy,
+  type ProviderRuntimeProfile,
+  type RuntimeConfig,
+} from '@llm-crane/schemas';
 import { ConfigurationError } from './errors';
 
 loadDotenv();
@@ -13,6 +21,12 @@ const DEFAULT_PROVIDER_RETRY_POLICY: ProviderRetryPolicy = {
   backoffStrategy: 'exponential',
   baseDelayMs: 500,
   maxDelayMs: 4_000,
+};
+
+const DEFAULT_PROVIDER_FALLBACK_POLICY: ProviderFallbackPolicy = {
+  enabled: true,
+  simple: [],
+  complex: [],
 };
 
 function parseRuntimeProfiles(env: EnvSource): ProviderRuntimeProfile[] {
@@ -51,6 +65,58 @@ function parseProviderRetryPolicy(env: EnvSource): ProviderRetryPolicy {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new ConfigurationError(`Invalid provider retry configuration: ${message}`);
+  }
+}
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+
+  throw new ConfigurationError(`Invalid boolean value: ${value}`);
+}
+
+function parseModelList(rawValue: string | undefined): string[] {
+  if (!rawValue) {
+    return [];
+  }
+
+  return [...new Set(rawValue.split(',').map((entry) => entry.trim()).filter(Boolean))];
+}
+
+function parseProviderFallbackPolicy(env: EnvSource): ProviderFallbackPolicy {
+  try {
+    return ProviderFallbackPolicySchema.parse({
+      enabled: parseBooleanEnv(env.LLM_CRANE_ENABLE_PROVIDER_FALLBACK, DEFAULT_PROVIDER_FALLBACK_POLICY.enabled),
+      simple: parseModelList(env.LLM_CRANE_SIMPLE_FALLBACK_MODELS),
+      complex: parseModelList(env.LLM_CRANE_COMPLEX_FALLBACK_MODELS),
+    });
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ConfigurationError(`Invalid provider fallback configuration: ${message}`);
+  }
+}
+
+function validateConfiguredFallbackModels(
+  fallbackPolicy: ProviderFallbackPolicy,
+  providerKeys: RuntimeConfig['providerKeys'],
+  runtimeProfiles: ProviderRuntimeProfile[],
+): void {
+  for (const modelId of [...fallbackPolicy.simple, ...fallbackPolicy.complex]) {
+    requireConfiguredModel(modelId, providerKeys, runtimeProfiles);
   }
 }
 
@@ -115,12 +181,14 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
   };
   const runtimeProfiles = parseRuntimeProfiles(env);
   const providerRetry = parseProviderRetryPolicy(env);
+  const providerFallback = parseProviderFallbackPolicy(env);
 
   if (Object.values(providerKeys).every((value) => !value) && runtimeProfiles.length === 0) {
     throw new ConfigurationError('At least one provider API key or runtime profile must be configured.');
   }
 
   validateConfiguredModelOwnership(providerKeys, runtimeProfiles);
+  validateConfiguredFallbackModels(providerFallback, providerKeys, runtimeProfiles);
 
   if (!isSupportedModelId(defaultSimpleModel) && !runtimeProfiles.some((profile) => profile.models.includes(defaultSimpleModel))) {
     throw new ConfigurationError(`Invalid simple model name: ${defaultSimpleModel}`);
@@ -139,6 +207,7 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     transport: env.LLM_CRANE_TRANSPORT ?? 'stdio',
     logLevel: env.LLM_CRANE_LOG_LEVEL ?? 'info',
     providerRetry,
+    providerFallback,
     providerKeys,
     runtimeProfiles,
   });

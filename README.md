@@ -20,6 +20,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Complex-path verifier stage now runs after Executor, merges low-cost model consistency review with hard rule checks for explicit JSON or list-format requirements, then records structured verdict, findings, and suggested action.
 - Verification failures now surface dedicated panel actions so user can retry executor, approve automatic model upgrade with recorded extra cost, or manually confirm current result.
 - Retriable provider failures now retry automatically with configurable fixed or exponential backoff, and each scheduled retry is recorded in trace metadata.
+- Preferred model can now fall back to configured backup model per simple or complex tier, with fallback reason visible in selected-model detail and session history tags.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -66,6 +67,7 @@ Run inside VS Code:
 - Selected provider/model
 - Request and response summaries showing automatic routing versus manual model override
 - Recent session history cards for comparing old runs by route, model, cache outcome, rerun source, and manual override tag
+- Recent session history cards now also mark fallback runs when executor switched models automatically
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
 - Verifier summary with merged model/rule verdict, reasons, findings, suggested next action, and verification action buttons when verifier outcome exists
@@ -94,8 +96,13 @@ Routing and runtime:
 - `LLM_CRANE_PROVIDER_BACKOFF_STRATEGY`: optional retry backoff mode, `fixed` or `exponential`; default `exponential`
 - `LLM_CRANE_PROVIDER_RETRY_BASE_DELAY_MS`: optional base retry delay in milliseconds; default `500`
 - `LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS`: optional retry delay cap in milliseconds; default `4000`
+- `LLM_CRANE_ENABLE_PROVIDER_FALLBACK`: optional boolean to enable or disable automatic model fallback; default `true`
+- `LLM_CRANE_SIMPLE_FALLBACK_MODELS`: optional comma-separated fallback model list for simple-tier selection
+- `LLM_CRANE_COMPLEX_FALLBACK_MODELS`: optional comma-separated fallback model list for complex-tier selection
 
 Retriable provider categories currently include `rate_limit`, `timeout`, `network`, and `upstream`. Non-retriable errors such as `auth`, `invalid_request`, or `unsupported_model` fail fast and return unified provider diagnostics.
+
+Fallback-eligible provider categories currently include `rate_limit`, `timeout`, `network`, `upstream`, `unsupported_model`, and `provider_not_configured`. Specific manual model override does not auto-fallback; explicit pin wins.
 
 Ollama runtime profile example:
 
@@ -228,6 +235,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, keeps checkpointed override state, and marks current response as `full` or `stage-rerun`
 - Manual model override now records `policy.override` trace entries and updates selected-provider reasoning in result summaries
 - Executor now retries retriable provider failures with configured backoff, records `executor.retry` attempt metadata in trace, and returns unified provider failure once retry budget is exhausted
+- Executor can now switch to configured fallback model after eligible provider failure, records `executor.fallback` trace metadata, and prices final response against model that actually completed
 - Pipeline returns unified `taskResult` payload even when executor stage fails
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks

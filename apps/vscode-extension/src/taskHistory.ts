@@ -29,6 +29,7 @@ export function buildTaskHistoryEntryView(
     formatCacheTag(taskResponse),
     formatRunTag(taskResponse),
     ...(override.summary === 'Automatic routing' ? [] : ['override']),
+    ...(taskResponse.trace.some((traceEvent) => traceEvent.stage === 'executor.fallback') ? ['fallback'] : []),
     ...(taskResponse.verifierResult && taskResponse.verifierResult.verdict !== 'pass'
       ? [`verify:${taskResponse.verifierResult.verdict}`]
       : []),
