@@ -597,10 +597,29 @@ describe('runTaskPipeline', () => {
   });
 
   it('records retrying trace state for retriable provider failure', async () => {
-    const providerRegistry = createProviderRegistryStub('unused');
+    const providerRegistry = {
+      invoke: vi
+        .fn()
+        .mockRejectedValue(
+          new (await import('@llm-crane/providers')).ProviderInvocationError('Rate limit exceeded', {
+            providerId: 'openai',
+            code: 'rate_limit',
+            retriable: true,
+            statusCode: 429,
+          }),
+        ),
+    };
 
     const response = await runTaskPipeline(
-      runtimeConfig,
+      {
+        ...runtimeConfig,
+        providerRetry: {
+          maxRetries: 1,
+          backoffStrategy: 'fixed',
+          baseDelayMs: 0,
+          maxDelayMs: 1,
+        },
+      },
       providerRegistry as never,
       {
         task: 'Refactor current selection to reduce duplication without changing public API.',
@@ -615,28 +634,18 @@ describe('runTaskPipeline', () => {
           },
         ],
       },
-      {
-        invokeRoutedProvider: async () => ({
-          status: 'failed',
-          providerId: 'openai',
-          modelId: 'gpt-4o-mini',
-          outputText: '',
-          error: {
-            providerId: 'openai',
-            code: 'rate_limit',
-            message: 'Rate limit exceeded',
-            retriable: true,
-            statusCode: 429,
-          },
-        }),
-      },
     );
 
-    const retryEvent = response.trace.find((event) => event.stage === 'executor.retry');
+    const retryEvents = response.trace.filter((event) => event.stage === 'executor.retry');
 
-    expect(retryEvent?.status).toBe('retrying');
-    expect(retryEvent?.error?.code).toBe('rate_limit');
-    expect(retryEvent?.metadata.retriable).toBe(true);
+    expect(retryEvents).toHaveLength(1);
+    expect(retryEvents[0]?.status).toBe('retrying');
+    expect(retryEvents[0]?.error?.code).toBe('rate_limit');
+    expect(retryEvents[0]?.metadata.retriable).toBe(true);
+    expect(retryEvents[0]?.metadata.attempt).toBe(1);
+    expect(retryEvents[0]?.metadata.nextAttempt).toBe(2);
+    expect(retryEvents[0]?.metadata.retryScheduled).toBe(true);
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
     expect(response.diagnostic?.category).toBe('provider');
     expect(response.diagnostic?.code).toBe('provider.rate_limit');
     expect(response.costEstimate.status).toBe('unknown');

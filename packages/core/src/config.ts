@@ -1,12 +1,19 @@
 import { config as loadDotenv } from 'dotenv';
 import { getProviderIdForModel, getSupportedModelIdsForProvider, isSupportedModelId } from '@llm-crane/providers';
-import { RuntimeConfigSchema, type ProviderRuntimeProfile, type RuntimeConfig } from '@llm-crane/schemas';
+import { ProviderRetryPolicySchema, RuntimeConfigSchema, type ProviderRetryPolicy, type ProviderRuntimeProfile, type RuntimeConfig } from '@llm-crane/schemas';
 import { ConfigurationError } from './errors';
 
 loadDotenv();
 
 type EnvSource = Record<string, string | undefined>;
 type HostedProviderKey = keyof RuntimeConfig['providerKeys'];
+
+const DEFAULT_PROVIDER_RETRY_POLICY: ProviderRetryPolicy = {
+  maxRetries: 2,
+  backoffStrategy: 'exponential',
+  baseDelayMs: 500,
+  maxDelayMs: 4_000,
+};
 
 function parseRuntimeProfiles(env: EnvSource): ProviderRuntimeProfile[] {
   const rawProfiles = env.LLM_CRANE_RUNTIME_PROFILES;
@@ -19,6 +26,31 @@ function parseRuntimeProfiles(env: EnvSource): ProviderRuntimeProfile[] {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new ConfigurationError(`Invalid LLM_CRANE_RUNTIME_PROFILES: ${message}`);
+  }
+}
+
+function parseProviderRetryPolicy(env: EnvSource): ProviderRetryPolicy {
+  const candidate = {
+    maxRetries: env.LLM_CRANE_PROVIDER_MAX_RETRIES,
+    backoffStrategy: env.LLM_CRANE_PROVIDER_BACKOFF_STRATEGY,
+    baseDelayMs: env.LLM_CRANE_PROVIDER_RETRY_BASE_DELAY_MS,
+    maxDelayMs: env.LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS,
+  };
+
+  if (Object.values(candidate).every((value) => value === undefined)) {
+    return DEFAULT_PROVIDER_RETRY_POLICY;
+  }
+
+  try {
+    return ProviderRetryPolicySchema.parse({
+      maxRetries: candidate.maxRetries !== undefined ? Number(candidate.maxRetries) : DEFAULT_PROVIDER_RETRY_POLICY.maxRetries,
+      backoffStrategy: candidate.backoffStrategy ?? DEFAULT_PROVIDER_RETRY_POLICY.backoffStrategy,
+      baseDelayMs: candidate.baseDelayMs !== undefined ? Number(candidate.baseDelayMs) : DEFAULT_PROVIDER_RETRY_POLICY.baseDelayMs,
+      maxDelayMs: candidate.maxDelayMs !== undefined ? Number(candidate.maxDelayMs) : DEFAULT_PROVIDER_RETRY_POLICY.maxDelayMs,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ConfigurationError(`Invalid provider retry configuration: ${message}`);
   }
 }
 
@@ -82,6 +114,7 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     gemini: env.GEMINI_API_KEY,
   };
   const runtimeProfiles = parseRuntimeProfiles(env);
+  const providerRetry = parseProviderRetryPolicy(env);
 
   if (Object.values(providerKeys).every((value) => !value) && runtimeProfiles.length === 0) {
     throw new ConfigurationError('At least one provider API key or runtime profile must be configured.');
@@ -105,6 +138,7 @@ export function loadRuntimeConfig(env: EnvSource): RuntimeConfig {
     defaultComplexModel,
     transport: env.LLM_CRANE_TRANSPORT ?? 'stdio',
     logLevel: env.LLM_CRANE_LOG_LEVEL ?? 'info',
+    providerRetry,
     providerKeys,
     runtimeProfiles,
   });

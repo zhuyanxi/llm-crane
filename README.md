@@ -19,6 +19,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
 - Complex-path verifier stage now runs after Executor, merges low-cost model consistency review with hard rule checks for explicit JSON or list-format requirements, then records structured verdict, findings, and suggested action.
 - Verification failures now surface dedicated panel actions so user can retry executor, approve automatic model upgrade with recorded extra cost, or manually confirm current result.
+- Retriable provider failures now retry automatically with configurable fixed or exponential backoff, and each scheduled retry is recorded in trace metadata.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -89,6 +90,12 @@ Routing and runtime:
 - `LLM_CRANE_CACHE_PATH`: optional SQLite file path; default is extension local storage path
 - `LLM_CRANE_TRANSPORT`: current V0 transport, `stdio`
 - `LLM_CRANE_LOG_LEVEL`: runtime log level
+- `LLM_CRANE_PROVIDER_MAX_RETRIES`: optional max retry count for retriable provider failures; default `2`
+- `LLM_CRANE_PROVIDER_BACKOFF_STRATEGY`: optional retry backoff mode, `fixed` or `exponential`; default `exponential`
+- `LLM_CRANE_PROVIDER_RETRY_BASE_DELAY_MS`: optional base retry delay in milliseconds; default `500`
+- `LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS`: optional retry delay cap in milliseconds; default `4000`
+
+Retriable provider categories currently include `rate_limit`, `timeout`, `network`, and `upstream`. Non-retriable errors such as `auth`, `invalid_request`, or `unsupported_model` fail fast and return unified provider diagnostics.
 
 Ollama runtime profile example:
 
@@ -220,6 +227,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
 - Stage rerun reuses prior checkpointed outputs before selected stage, preserves prior trace history, keeps checkpointed override state, and marks current response as `full` or `stage-rerun`
 - Manual model override now records `policy.override` trace entries and updates selected-provider reasoning in result summaries
+- Executor now retries retriable provider failures with configured backoff, records `executor.retry` attempt metadata in trace, and returns unified provider failure once retry budget is exhausted
 - Pipeline returns unified `taskResult` payload even when executor stage fails
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks

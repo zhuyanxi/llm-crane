@@ -148,6 +148,12 @@ describe('RuntimeConfigSchema', () => {
       defaultComplexModel: 'claude-3-5-sonnet-latest',
       transport: 'stdio',
       logLevel: 'info',
+      providerRetry: {
+        maxRetries: 2,
+        backoffStrategy: 'exponential',
+        baseDelayMs: 500,
+        maxDelayMs: 4000,
+      },
       providerKeys: {
         anthropic: 'sk-anthropic',
       },
@@ -188,6 +194,49 @@ describe('RuntimeConfigSchema', () => {
     expect(parsed.runtimeProfiles[0]?.headers).toEqual({ 'X-Client': 'llm-crane' });
     expect(parsed.runtimeProfiles[1]?.providerId).toBe('ollama');
     expect(parsed.runtimeProfiles[1]?.apiFamily).toBe('ollama');
+  });
+
+  it('parses provider retry policy and rejects invalid delay window', () => {
+    const parsed = RuntimeConfigSchema.parse({
+      defaultSimpleModel: 'gpt-4o-mini',
+      defaultComplexModel: 'claude-3-5-sonnet-latest',
+      transport: 'stdio',
+      logLevel: 'info',
+      providerRetry: {
+        maxRetries: 3,
+        backoffStrategy: 'fixed',
+        baseDelayMs: 250,
+        maxDelayMs: 250,
+      },
+      providerKeys: {
+        openai: 'sk-openai',
+      },
+    });
+
+    expect(parsed.providerRetry).toEqual({
+      maxRetries: 3,
+      backoffStrategy: 'fixed',
+      baseDelayMs: 250,
+      maxDelayMs: 250,
+    });
+
+    expect(() =>
+      RuntimeConfigSchema.parse({
+        defaultSimpleModel: 'gpt-4o-mini',
+        defaultComplexModel: 'claude-3-5-sonnet-latest',
+        transport: 'stdio',
+        logLevel: 'info',
+        providerRetry: {
+          maxRetries: 1,
+          backoffStrategy: 'fixed',
+          baseDelayMs: 500,
+          maxDelayMs: 100,
+        },
+        providerKeys: {
+          openai: 'sk-openai',
+        },
+      }),
+    ).toThrow('maxDelayMs must be greater than or equal to baseDelayMs');
   });
 });
 

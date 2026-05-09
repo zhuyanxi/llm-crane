@@ -11,6 +11,12 @@ describe('loadRuntimeConfig', () => {
     expect(config.defaultSimpleModel).toBe('gpt-4o-mini');
     expect(config.defaultComplexModel).toBe('claude-3-5-sonnet-latest');
     expect(config.runtimeProfiles).toEqual([]);
+    expect(config.providerRetry).toEqual({
+      maxRetries: 2,
+      backoffStrategy: 'exponential',
+      baseDelayMs: 500,
+      maxDelayMs: 4000,
+    });
   });
 
   it('throws when provider keys are missing', () => {
@@ -101,5 +107,34 @@ describe('loadRuntimeConfig', () => {
         LLM_CRANE_COMPLEX_MODEL: 'gpt-4.1',
       }),
     ).toThrow('Invalid simple model name: unknown-model');
+  });
+
+  it('loads provider retry policy from env', () => {
+    const config = loadRuntimeConfig({
+      OPENAI_API_KEY: 'openai-key',
+      ANTHROPIC_API_KEY: 'anthropic-key',
+      LLM_CRANE_PROVIDER_MAX_RETRIES: '4',
+      LLM_CRANE_PROVIDER_BACKOFF_STRATEGY: 'fixed',
+      LLM_CRANE_PROVIDER_RETRY_BASE_DELAY_MS: '250',
+      LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS: '1000',
+    });
+
+    expect(config.providerRetry).toEqual({
+      maxRetries: 4,
+      backoffStrategy: 'fixed',
+      baseDelayMs: 250,
+      maxDelayMs: 1000,
+    });
+  });
+
+  it('throws on invalid provider retry policy env', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        OPENAI_API_KEY: 'openai-key',
+        LLM_CRANE_PROVIDER_MAX_RETRIES: '2',
+        LLM_CRANE_PROVIDER_RETRY_BASE_DELAY_MS: '1000',
+        LLM_CRANE_PROVIDER_RETRY_MAX_DELAY_MS: '10',
+      }),
+    ).toThrow('Invalid provider retry configuration');
   });
 });

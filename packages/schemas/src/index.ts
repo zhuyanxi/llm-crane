@@ -157,6 +157,23 @@ export const ProviderExecutionResultSchema = z.object({
   error: ProviderErrorSchema.optional(),
 });
 
+export const RetryBackoffStrategySchema = z.enum(['fixed', 'exponential']);
+
+export const ProviderRetryPolicySchema = z.object({
+  maxRetries: z.number().int().min(0).max(5),
+  backoffStrategy: RetryBackoffStrategySchema,
+  baseDelayMs: z.number().int().nonnegative(),
+  maxDelayMs: z.number().int().positive(),
+}).superRefine((policy, context) => {
+  if (policy.maxDelayMs < policy.baseDelayMs) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'maxDelayMs must be greater than or equal to baseDelayMs',
+      path: ['maxDelayMs'],
+    });
+  }
+});
+
 export const PipelineTraceStatusSchema = z.enum(['pending', 'running', 'retrying', 'completed', 'failed', 'skipped']);
 
 export const PipelineTraceMetadataValueSchema = z.union([z.string(), z.number(), z.boolean()]);
@@ -802,6 +819,7 @@ export const RuntimeConfigSchema = z.object({
   defaultComplexModel: z.string().min(1),
   transport: TransportSchema.default('stdio'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  providerRetry: ProviderRetryPolicySchema.optional(),
   providerKeys: z.object({
     openai: z.string().min(1).optional(),
     anthropic: z.string().min(1).optional(),
@@ -825,6 +843,8 @@ export type ProviderRuntimeProfile = z.infer<typeof ProviderRuntimeProfileSchema
 export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;
 export type ProviderError = z.infer<typeof ProviderErrorSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
+export type RetryBackoffStrategy = z.infer<typeof RetryBackoffStrategySchema>;
+export type ProviderRetryPolicy = z.infer<typeof ProviderRetryPolicySchema>;
 export type CacheStatus = z.infer<typeof CacheStatusSchema>;
 export type DiagnosticCategory = z.infer<typeof DiagnosticCategorySchema>;
 export type Diagnostic = z.infer<typeof DiagnosticSchema>;

@@ -961,6 +961,36 @@ export async function runTaskPipeline(
         routeDecision,
         plannerResult,
         reasonerResult,
+        {
+          retryPolicy: config.providerRetry,
+          onRetryAttempt: async (attemptInfo) => {
+            trace.add(
+              'executor.retry',
+              'retrying',
+              `attempt=${attemptInfo.attempt}; nextAttempt=${attemptInfo.nextAttempt}; delayMs=${attemptInfo.delayMs}; error=${attemptInfo.error.code}`,
+              {
+                metadata: compactMetadata({
+                  providerId: attemptInfo.providerId,
+                  modelId: attemptInfo.modelId,
+                  runtimeId: providerTarget.runtimeId,
+                  deploymentMode: providerTarget.deploymentMode,
+                  apiFamily: providerTarget.apiFamily,
+                  retriable: true,
+                  attempt: attemptInfo.attempt,
+                  nextAttempt: attemptInfo.nextAttempt,
+                  maxRetries: attemptInfo.maxRetries,
+                  backoffStrategy: attemptInfo.backoffStrategy,
+                  delayMs: attemptInfo.delayMs,
+                  retryScheduled: true,
+                }),
+                error: {
+                  code: attemptInfo.error.code,
+                  message: attemptInfo.error.message,
+                },
+              },
+            );
+          },
+        },
       );
       pipelineMachine.updateContext({
         providerResult,
@@ -1002,24 +1032,6 @@ export async function runTaskPipeline(
             : undefined,
         },
       );
-
-      if (providerResult.status === 'failed' && providerResult.error?.retriable) {
-        trace.add('executor.retry', 'retrying', 'Provider error marked retriable; automatic retry disabled in V0.', {
-          metadata: compactMetadata({
-            providerId: providerResult.providerId,
-            modelId: providerResult.modelId,
-            runtimeId: providerTarget.runtimeId,
-            deploymentMode: providerTarget.deploymentMode,
-            apiFamily: providerTarget.apiFamily,
-            retriable: true,
-            retryScheduled: false,
-          }),
-          error: {
-            code: providerResult.error.code,
-            message: providerResult.error.message,
-          },
-        });
-      }
     } catch (error) {
       const reason = `Executor stage crashed: ${toErrorMessage(error)}`;
       providerResult = createFailedProviderExecutionResult(modelId, new Error(reason), providerId);

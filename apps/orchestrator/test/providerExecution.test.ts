@@ -181,13 +181,16 @@ describe('invokeRoutedProvider', () => {
 
   it('maps provider errors into unified failed execution result', async () => {
     const invoke = vi.fn().mockRejectedValue(
-      new ProviderInvocationError('Rate limit exceeded', {
+      new ProviderInvocationError('Invalid request payload', {
         providerId: 'openai',
-        code: 'rate_limit',
-        retriable: true,
-        statusCode: 429,
+        code: 'invalid_request',
+        retriable: false,
+        statusCode: 400,
       }),
     );
+
+    const onRetryAttempt = vi.fn();
+    const sleep = vi.fn().mockResolvedValue(undefined);
 
     const result = await invokeRoutedProvider(
       { invoke },
@@ -196,10 +199,113 @@ describe('invokeRoutedProvider', () => {
       { ...baseStructurizerResult, structuredTask: { ...baseStructurizerResult.structuredTask, qualityBar: 'fast' } },
       { ...baseRouteDecision, route: 'simple' },
       undefined,
+      undefined,
+      {
+        retryPolicy: {
+          maxRetries: 3,
+          backoffStrategy: 'fixed',
+          baseDelayMs: 10,
+          maxDelayMs: 10,
+        },
+        onRetryAttempt,
+        sleep,
+      },
     );
 
     expect(result.status).toBe('failed');
-    expect(result.error?.code).toBe('rate_limit');
-    expect(result.error?.retriable).toBe(true);
+    expect(result.error?.code).toBe('invalid_request');
+    expect(result.error?.retriable).toBe(false);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(onRetryAttempt).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('retries retriable timeout and rate limit failures with configured backoff', async () => {
+    const invoke = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ProviderInvocationError('Rate limit exceeded', {
+          providerId: 'openai',
+          code: 'rate_limit',
+          retriable: true,
+          statusCode: 429,
+        }),
+      )
+      .mockRejectedValueOnce(
+        new ProviderInvocationError('Provider request timed out', {
+          providerId: 'openai',
+          code: 'timeout',
+          retriable: true,
+          statusCode: 504,
+        }),
+      )
+      .mockResolvedValue({
+        providerId: 'openai',
+        modelId: 'gpt-4o-mini',
+        outputText: 'retry success',
+        stopReason: 'stop',
+        usage: {
+          inputTokens: 90,
+          outputTokens: 40,
+          totalTokens: 130,
+        },
+        latencyMs: 320,
+      });
+
+    const onRetryAttempt = vi.fn();
+    const sleep = vi.fn().mockResolvedValue(undefined);
+
+    const result = await invokeRoutedProvider(
+      { invoke },
+      'gpt-4o-mini',
+      { ...baseTaskRequest, qualityBar: 'fast' },
+      { ...baseStructurizerResult, structuredTask: { ...baseStructurizerResult.structuredTask, qualityBar: 'fast' } },
+      { ...baseRouteDecision, route: 'simple' },
+      undefined,
+      undefined,
+      {
+        retryPolicy: {
+          maxRetries: 2,
+          backoffStrategy: 'exponential',
+          baseDelayMs: 100,
+          maxDelayMs: 150,
+        },
+        onRetryAttempt,
+        sleep,
+      },
+    );
+
+    expect(result.status).toBe('completed');
+    expect(result.outputText).toBe('retry success');
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(onRetryAttempt).toHaveBeenCalledTimes(2);
+    expect(onRetryAttempt).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        attempt: 1,
+        nextAttempt: 2,
+        delayMs: 100,
+        maxRetries: 2,
+        backoffStrategy: 'exponential',
+        error: expect.objectContaining({
+          code: 'rate_limit',
+        }),
+      }),
+    );
+    expect(onRetryAttempt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        attempt: 2,
+        nextAttempt: 3,
+        delayMs: 150,
+        maxRetries: 2,
+        backoffStrategy: 'exponential',
+        error: expect.objectContaining({
+          code: 'timeout',
+        }),
+      }),
+    );
+    expect(sleep).toHaveBeenNthCalledWith(1, 100);
+    expect(sleep).toHaveBeenNthCalledWith(2, 150);
   });
 });
