@@ -63,7 +63,7 @@ import {
 import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 import { createTaskCheckpoint } from './taskCheckpoint';
-import { createVerifierFailureResult, verifyTaskWithModel } from './verifier';
+import { createVerifierFailureResult, mergeVerificationResults, runRuleVerifiers, verifyTaskWithModel } from './verifier';
 
 type PipelineRunnerDependencies = {
   createTimestamp?: () => string;
@@ -79,6 +79,8 @@ type PipelineRunnerDependencies = {
   buildProviderUserPrompt?: typeof buildProviderUserPrompt;
   invokeRoutedProvider?: typeof invokeRoutedProvider;
   verifyTaskOutput?: typeof verifyTaskWithModel;
+  runRuleVerifiers?: typeof runRuleVerifiers;
+  mergeVerificationResults?: typeof mergeVerificationResults;
 };
 
 type TraceStatus = PipelineTraceEvent['status'];
@@ -173,6 +175,8 @@ const defaultDependencies: Required<PipelineRunnerDependencies> = {
   buildProviderUserPrompt,
   invokeRoutedProvider,
   verifyTaskOutput: verifyTaskWithModel,
+  runRuleVerifiers,
+  mergeVerificationResults,
 };
 
 function toErrorMessage(error: unknown): string {
@@ -323,9 +327,11 @@ function createVerifierStageError(verifierResult: VerificationResult): PipelineT
     return undefined;
   }
 
+  const criticalFinding = verifierResult.findings.find((finding) => finding.severity === 'fail') ?? verifierResult.findings[0];
+
   return {
-    code: verifierResult.findings[0]?.code ?? 'verifier_failed',
-    message: verifierResult.findings[0]?.summary ?? verifierResult.summary,
+    code: criticalFinding?.code ?? 'verifier_failed',
+    message: criticalFinding?.summary ?? verifierResult.summary,
   };
 }
 
@@ -1114,7 +1120,9 @@ export async function runTaskPipeline(
         createVerifierFailureResult(
           'Verifier skipped because executor did not complete successfully.',
           [providerResult.error?.message ?? 'Executor output unavailable for verification.'],
-          'retry',
+          {
+            suggestedAction: 'retry',
+          },
         ),
       );
     } else {
@@ -1129,38 +1137,110 @@ export async function runTaskPipeline(
         }),
       });
 
-      verifierResult = await dependencies.verifyTaskOutput(providerRegistry, verifierModelId, {
-        taskRequest,
-        structurizerResult,
-        routeDecision,
-        plannerResult,
-        reasonerResult,
-        providerResult,
-        output,
-      });
+      try {
+        const verifierContext = {
+          taskRequest,
+          structurizerResult,
+          routeDecision,
+          plannerResult,
+          reasonerResult,
+          providerResult,
+          output,
+        };
+        const modelVerifierResult = await dependencies.verifyTaskOutput(providerRegistry, verifierModelId, verifierContext);
+        trace.add(
+          'verifier.model.finish',
+          modelVerifierResult.verdict === 'fail' ? 'failed' : 'completed',
+          modelVerifierResult.summary,
+          {
+            metadata: compactMetadata({
+              verifierId: modelVerifierResult.verifierId,
+              verifierKind: modelVerifierResult.verifierKind,
+              verifierVerdict: modelVerifierResult.verdict,
+              suggestedAction: modelVerifierResult.suggestedAction,
+              findingCount: modelVerifierResult.findings.length,
+            }),
+            error: createVerifierStageError(modelVerifierResult),
+          },
+        );
 
-      pipelineMachine.updateContext({
-        verifierResult,
-      });
-      pipelineMachine.completeStage('verifier', createVerifierStageOutput('completed', verifierResult.summary, verifierResult), {
-        error: createVerifierStageError(verifierResult),
-      });
-      trace.add(
-        'verifier.finish',
-        verifierResult.verdict === 'fail' ? 'failed' : 'completed',
-        verifierResult.summary,
-        {
+        const ruleVerifierResults = await dependencies.runRuleVerifiers(verifierContext);
+        for (const ruleVerifierResult of ruleVerifierResults) {
+          trace.add(
+            'verifier.rule.finish',
+            ruleVerifierResult.verdict === 'fail' ? 'failed' : 'completed',
+            ruleVerifierResult.summary,
+            {
+              metadata: compactMetadata({
+                verifierId: ruleVerifierResult.verifierId,
+                verifierKind: ruleVerifierResult.verifierKind,
+                verifierVerdict: ruleVerifierResult.verdict,
+                suggestedAction: ruleVerifierResult.suggestedAction,
+                findingCount: ruleVerifierResult.findings.length,
+              }),
+              error: createVerifierStageError(ruleVerifierResult),
+            },
+          );
+        }
+
+        verifierResult = dependencies.mergeVerificationResults([modelVerifierResult, ...ruleVerifierResults]);
+
+        pipelineMachine.updateContext({
+          verifierResult,
+        });
+        pipelineMachine.completeStage('verifier', createVerifierStageOutput('completed', verifierResult.summary, verifierResult), {
+          error: createVerifierStageError(verifierResult),
+        });
+        trace.add(
+          'verifier.finish',
+          verifierResult.verdict === 'fail' ? 'failed' : 'completed',
+          verifierResult.summary,
+          {
+            metadata: compactMetadata({
+              route: routeDecision.route,
+              verifierModelId,
+              verifierProviderId: verifierTarget.providerId,
+              verifierKind: verifierResult.verifierKind,
+              verifierVerdict: verifierResult.verdict,
+              suggestedAction: verifierResult.suggestedAction,
+              findingCount: verifierResult.findings.length,
+              subVerifierCount: 1 + ruleVerifierResults.length,
+              ruleVerifierCount: ruleVerifierResults.length,
+            }),
+            error: createVerifierStageError(verifierResult),
+          },
+        );
+      } catch (error) {
+        const reason = `Verifier stage crashed: ${toErrorMessage(error)}`;
+        verifierResult = createVerifierFailureResult('Verifier stage failed safely.', [reason], {
+          verifierId: 'verifier-stage-v1',
+          verifierKind: 'composite',
+          suggestedAction: 'manual-confirm',
+          codePrefix: 'verifier_stage_crash',
+        });
+        pipelineMachine.updateContext({
+          verifierResult,
+        });
+        pipelineMachine.completeStage('verifier', createVerifierStageOutput('completed', verifierResult.summary, verifierResult), {
+          error: {
+            code: 'verifier_crash',
+            message: reason,
+          },
+        });
+        trace.add('verifier.finish', 'failed', reason, {
           metadata: compactMetadata({
             route: routeDecision.route,
             verifierModelId,
             verifierProviderId: verifierTarget.providerId,
             verifierVerdict: verifierResult.verdict,
             suggestedAction: verifierResult.suggestedAction,
-            findingCount: verifierResult.findings.length,
           }),
-          error: createVerifierStageError(verifierResult),
-        },
-      );
+          error: {
+            code: 'verifier_crash',
+            message: reason,
+          },
+        });
+      }
     }
   }
 

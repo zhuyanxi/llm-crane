@@ -17,7 +17,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
 - Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
-- Complex-path verifier stage now runs after Executor with a low-cost model consistency check over output, constraints, and plan, then records structured verdict, findings, and suggested action.
+- Complex-path verifier stage now runs after Executor, merges low-cost model consistency review with hard rule checks for explicit JSON or list-format requirements, then records structured verdict, findings, and suggested action.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -66,7 +66,7 @@ Run inside VS Code:
 - Recent session history cards for comparing old runs by route, model, cache outcome, rerun source, and manual override tag
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
-- Verifier stage summary with verdict and suggested next action when verifier outcome exists
+- Verifier stage summary with merged model/rule verdict and suggested next action when verifier outcome exists
 - Routing summary with route status, confidence, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
 - Planner status, ordered steps, and planner trace entries for complex tasks
 - Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
@@ -207,7 +207,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 ### Current V0 behavior
 
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
-- Complex path runs Planner, Reasoner, Executor, then low-cost Verifier; verifier checks output against constraints, expected output, and plan before final response is assembled
+- Complex path runs Planner, Reasoner, Executor, then Verifier; verifier combines low-cost model review with built-in hard format/schema checks before final response is assembled
 - Task panel supports optional template metadata for refactor, debug, and architecture-analysis requests; validated template selection is carried inside `taskTemplate`
 - Built-in templates now carry context strategy metadata, and attached contexts can include `priority`, `truncated`, and `originalLength` for preview and downstream prompts
 - Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
@@ -222,7 +222,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks
 - `taskResult.reasonerResult` carries `needReasoning`, decision source, early-exit or escalation summary, and key evidence for downstream executor/UI use
-- `taskResult.verifierResult` now carries shared verification verdict, reasons, suggested action, and findings from the low-cost model verifier and future rule verifiers
+- `taskResult.verifierResult` now carries shared verification verdict, reasons, suggested action, and merged findings from model verifier plus built-in rule verifiers, with finding source metadata for downstream UI or trace use
 - `taskResult.checkpoint` carries resumable task request, executor output, provider result, pipeline state, and trace history for stage rerun API
 - Trace events carry `stage`, `status`, `timestamp`, `metadata`, optional `error`, and `retrying` state
 - Cost estimates use local USD pricing catalog; status is `exact`, `estimated`, or `unknown`

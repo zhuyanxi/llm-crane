@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PlannerResult, ProviderExecutionResult, ReasonerResult, RouteDecision, StructurizerResult, TaskRequest } from '@llm-crane/schemas';
-import { buildVerifierUserPrompt, createDeferredVerificationResult, createVerificationResult, parseVerificationOutput, verifyTaskWithModel } from '../src/verifier';
+import { buildVerifierUserPrompt, createDeferredVerificationResult, createVerificationResult, createListFormatRuleVerifier, mergeVerificationResults, parseVerificationOutput, runRuleVerifiers, verifyTaskWithModel } from '../src/verifier';
 
 const baseTaskRequest: TaskRequest = {
   task: 'Analyze workspace risk and keep public API stable.',
@@ -230,5 +230,105 @@ describe('verifier contract helpers', () => {
     expect(result.verdict).toBe('warning');
     expect(result.suggestedAction).toBe('retry');
     expect(result.summary).toContain('Model verifier unavailable');
+  });
+
+  it('fails explicit numbered-list hard rule through rule verifier hook', async () => {
+    const results = await runRuleVerifiers(
+      {
+        taskRequest: {
+          ...baseTaskRequest,
+          constraints: [...baseTaskRequest.constraints, 'Return numbered list output.'],
+        },
+        structurizerResult: {
+          ...baseStructurizerResult,
+          structuredTask: {
+            ...baseStructurizerResult.structuredTask,
+            constraints: [...baseStructurizerResult.structuredTask.constraints, 'Return numbered list output.'],
+            expectedOutput: ['Use numbered list format in final answer.'],
+          },
+        },
+        routeDecision: baseRouteDecision,
+        plannerResult: basePlannerResult,
+        reasonerResult: baseReasonerResult,
+        providerResult: {
+          ...baseProviderResult,
+          outputText: 'Risk A only. No numbering here.',
+        },
+        output: 'Risk A only. No numbering here.',
+      },
+      [createListFormatRuleVerifier()],
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verifierKind).toBe('rule');
+    expect(results[0]?.verdict).toBe('fail');
+    expect(results[0]?.findings[0]?.code).toBe('format_numbered_list_missing');
+    expect(results[0]?.findings[0]?.verifierKind).toBe('rule');
+  });
+
+  it('returns safe warning result when rule verifier crashes', async () => {
+    const results = await runRuleVerifiers(
+      {
+        taskRequest: baseTaskRequest,
+        structurizerResult: baseStructurizerResult,
+        routeDecision: baseRouteDecision,
+        plannerResult: basePlannerResult,
+        reasonerResult: baseReasonerResult,
+        providerResult: baseProviderResult,
+        output: baseProviderResult.outputText,
+      },
+      [
+        {
+          verifierId: 'rule-crash-v1',
+          verifierKind: 'rule',
+          verify() {
+            throw new Error('rule exploded');
+          },
+        },
+      ],
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verifierId).toBe('rule-crash-v1');
+    expect(results[0]?.verdict).toBe('warning');
+    expect(results[0]?.suggestedAction).toBe('manual-confirm');
+    expect(results[0]?.findings[0]?.code).toContain('rule_verifier_failure');
+  });
+
+  it('merges model and rule verifier results into composite output', () => {
+    const merged = mergeVerificationResults([
+      createVerificationResult({
+        verifierId: 'model-consistency-v1',
+        verifierKind: 'model',
+        verdict: 'pass',
+        summary: 'Model verifier passed.',
+        reasons: ['No model inconsistency found.'],
+        suggestedAction: 'proceed',
+        findings: [],
+      }),
+      createVerificationResult({
+        verifierId: 'rule-output-format-v1',
+        verifierKind: 'rule',
+        verdict: 'fail',
+        summary: 'Numbered list rule failed.',
+        reasons: ['Output did not satisfy explicit numbered list requirement.'],
+        suggestedAction: 'retry',
+        findings: [
+          {
+            code: 'format_numbered_list_missing',
+            summary: 'Numbered list rule failed.',
+            detail: 'Expected at least one numbered item.',
+            severity: 'fail',
+          },
+        ],
+      }),
+    ]);
+
+    expect(merged.verifierKind).toBe('composite');
+    expect(merged.verdict).toBe('fail');
+    expect(merged.suggestedAction).toBe('retry');
+    expect(merged.summary).toContain('model-consistency-v1=pass');
+    expect(merged.summary).toContain('rule-output-format-v1=fail');
+    expect(merged.findings.some((finding) => finding.verifierKind === 'rule')).toBe(true);
   });
 });

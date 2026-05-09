@@ -483,13 +483,15 @@ export const VerificationVerdictSchema = z.enum(['pass', 'fail', 'warning']);
 
 export const VerificationSuggestedActionSchema = z.enum(['proceed', 'retry', 'upgrade-model', 'manual-confirm']);
 
-export const VerificationKindSchema = z.enum(['model', 'rule']);
+export const VerificationKindSchema = z.enum(['model', 'rule', 'composite']);
 
 export const VerificationFindingSchema = z.object({
   code: z.string().min(1),
   summary: z.string().min(1),
   detail: z.string().min(1),
   severity: VerificationVerdictSchema,
+  verifierId: z.string().min(1).optional(),
+  verifierKind: VerificationKindSchema.optional(),
 });
 
 export const VerificationResultSchema = z.object({

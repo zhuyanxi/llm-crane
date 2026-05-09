@@ -1,5 +1,6 @@
 import {
   VerificationResultSchema,
+  type VerificationFinding,
   type PlannerResult,
   type ProviderExecutionResult,
   type ReasonerResult,
@@ -21,8 +22,25 @@ type VerifierProviderInvoker = {
 };
 
 const VERIFIER_MODEL_ID = 'model-consistency-v1';
+const VERIFIER_COMPOSITE_ID = 'composite-verifier-v1';
 const VERIFIER_MAX_OUTPUT_TOKENS = 900;
 const VERIFIER_TIMEOUT_MS = 15_000;
+
+const SUGGESTED_ACTION_PRIORITY: Record<VerificationResult['suggestedAction'], number> = {
+  proceed: 0,
+  'manual-confirm': 1,
+  retry: 2,
+  'upgrade-model': 3,
+};
+
+type HardOutputRule = 'json' | 'numbered-list' | 'bullet-list';
+
+type VerifierFailureOptions = {
+  suggestedAction?: 'retry' | 'manual-confirm';
+  verifierId?: string;
+  verifierKind?: VerificationKind;
+  codePrefix?: string;
+};
 
 export type VerifierContext = {
   taskRequest: TaskRequest;
@@ -40,6 +58,12 @@ export interface Verifier {
   verify(context: VerifierContext): Promise<VerificationResult> | VerificationResult;
 }
 
+export interface RuleVerifier {
+  readonly verifierId: string;
+  readonly verifierKind: 'rule';
+  verify(context: VerifierContext): Promise<VerificationResult | undefined> | VerificationResult | undefined;
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -51,6 +75,21 @@ function truncate(value: string, maxLength = 4000): string {
   }
 
   return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function unique(items: string[]): string[] {
+  return [...new Set(items.map((item) => normalizeText(item)).filter(Boolean))];
+}
+
+function addFindingSource(result: VerificationResult): VerificationResult {
+  return {
+    ...result,
+    findings: result.findings.map((finding) => ({
+      ...finding,
+      verifierId: finding.verifierId ?? result.verifierId,
+      verifierKind: finding.verifierKind ?? (result.verifierKind === 'composite' ? undefined : result.verifierKind),
+    })),
+  };
 }
 
 function extractJsonCandidate(rawOutput: string): unknown {
@@ -126,12 +165,12 @@ function normalizeVerificationResult(result: VerificationResult): VerificationRe
       ? result.suggestedAction === 'proceed' ? 'retry' : result.suggestedAction
       : result.suggestedAction === 'proceed' ? 'manual-confirm' : result.suggestedAction;
 
-  return createVerificationResult({
+  return createVerificationResult(addFindingSource({
     ...result,
     verifierId: result.verifierId || VERIFIER_MODEL_ID,
     verifierKind: result.verifierKind || 'model',
     suggestedAction,
-  });
+  }));
 }
 
 export function createVerificationResult(result: VerificationResult): VerificationResult {
@@ -159,20 +198,271 @@ export function createDeferredVerificationResult(
   });
 }
 
-export function createVerifierFailureResult(summary: string, reasons: string[], suggestedAction: 'retry' | 'manual-confirm' = 'retry'): VerificationResult {
+export function createVerifierFailureResult(
+  summary: string,
+  reasons: string[],
+  options: VerifierFailureOptions = {},
+): VerificationResult {
   return createVerificationResult({
-    verifierId: VERIFIER_MODEL_ID,
-    verifierKind: 'model',
+    verifierId: options.verifierId ?? VERIFIER_MODEL_ID,
+    verifierKind: options.verifierKind ?? 'model',
     verdict: 'warning',
     summary,
     reasons,
-    suggestedAction,
+    suggestedAction: options.suggestedAction ?? 'retry',
     findings: reasons.map((reason, index) => ({
-      code: `verifier_failure_${index + 1}`,
+      code: `${options.codePrefix ?? 'verifier_failure'}_${index + 1}`,
       summary: 'Verifier unavailable',
       detail: reason,
       severity: 'warning',
     })),
+  });
+}
+
+function createPassVerificationResult(
+  verifierId: string,
+  verifierKind: Extract<VerificationKind, 'model' | 'rule'>,
+  summary: string,
+  reasons: string[] = [],
+): VerificationResult {
+  return createVerificationResult({
+    verifierId,
+    verifierKind,
+    verdict: 'pass',
+    summary,
+    reasons,
+    suggestedAction: 'proceed',
+    findings: [],
+  });
+}
+
+function createRuleFailureResult(
+  verifierId: string,
+  summary: string,
+  reason: string,
+  code: string,
+  detail: string,
+  suggestedAction: 'retry' | 'manual-confirm' = 'retry',
+): VerificationResult {
+  return createVerificationResult({
+    verifierId,
+    verifierKind: 'rule',
+    verdict: 'fail',
+    summary,
+    reasons: [reason],
+    suggestedAction,
+    findings: [
+      {
+        code,
+        summary,
+        detail,
+        severity: 'fail',
+      },
+    ],
+  });
+}
+
+function collectRuleTexts(context: VerifierContext): string[] {
+  return [
+    context.taskRequest.task,
+    ...context.taskRequest.constraints,
+    ...context.structurizerResult.structuredTask.constraints,
+    ...context.structurizerResult.structuredTask.expectedOutput,
+    ...(context.plannerResult?.downstreamHints.verifierChecks ?? []),
+  ];
+}
+
+function detectHardOutputRules(texts: string[]): HardOutputRule[] {
+  const rules: HardOutputRule[] = [];
+  const hasJsonRule = texts.some((text) => /(?:strict|valid|parseable)?\s*json\b/i.test(text));
+  const hasNumberedListRule = texts.some((text) => /\b(numbered|ordered)\s+list\b|\buse\s+numbers\b/i.test(text));
+  const hasBulletListRule = texts.some((text) => /\b(bullet|bulleted)\s+list\b|\bmarkdown\s+bullets\b/i.test(text));
+
+  if (hasJsonRule) {
+    rules.push('json');
+  }
+  if (hasNumberedListRule) {
+    rules.push('numbered-list');
+  }
+  if (hasBulletListRule) {
+    rules.push('bullet-list');
+  }
+
+  return rules;
+}
+
+function hasNumberedList(output: string): boolean {
+  return output.split(/\r?\n/).some((line) => /^\s*\d+\.\s+\S+/.test(line));
+}
+
+function hasBulletList(output: string): boolean {
+  return output.split(/\r?\n/).some((line) => /^\s*[-*]\s+\S+/.test(line));
+}
+
+export function createJsonSchemaRuleVerifier(): RuleVerifier {
+  return {
+    verifierId: 'rule-json-schema-v1',
+    verifierKind: 'rule',
+    verify(context: VerifierContext): VerificationResult | undefined {
+      const rules = detectHardOutputRules(collectRuleTexts(context));
+      if (!rules.includes('json')) {
+        return undefined;
+      }
+
+      const output = context.output ?? context.providerResult?.outputText ?? '';
+      try {
+        extractJsonCandidate(output);
+        return createPassVerificationResult(
+          'rule-json-schema-v1',
+          'rule',
+          'JSON schema rule passed.',
+          ['Output satisfied explicit JSON formatting rule.'],
+        );
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'Output was not valid JSON.';
+        return createRuleFailureResult(
+          'rule-json-schema-v1',
+          'JSON schema rule failed.',
+          'Output did not satisfy explicit JSON output requirement.',
+          'schema_invalid_json',
+          reason,
+        );
+      }
+    },
+  };
+}
+
+export function createListFormatRuleVerifier(): RuleVerifier {
+  return {
+    verifierId: 'rule-output-format-v1',
+    verifierKind: 'rule',
+    verify(context: VerifierContext): VerificationResult | undefined {
+      const rules = detectHardOutputRules(collectRuleTexts(context));
+      const output = context.output ?? context.providerResult?.outputText ?? '';
+
+      if (rules.includes('numbered-list') && !hasNumberedList(output)) {
+        return createRuleFailureResult(
+          'rule-output-format-v1',
+          'Numbered list rule failed.',
+          'Output did not satisfy explicit numbered list requirement.',
+          'format_numbered_list_missing',
+          'Expected at least one line matching `1. item` style output.',
+        );
+      }
+
+      if (rules.includes('bullet-list') && !hasBulletList(output)) {
+        return createRuleFailureResult(
+          'rule-output-format-v1',
+          'Bullet list rule failed.',
+          'Output did not satisfy explicit bullet list requirement.',
+          'format_bullet_list_missing',
+          'Expected at least one line matching `- item` or `* item` style output.',
+        );
+      }
+
+      if (!rules.includes('numbered-list') && !rules.includes('bullet-list')) {
+        return undefined;
+      }
+
+      return createPassVerificationResult(
+        'rule-output-format-v1',
+        'rule',
+        'Output format rule passed.',
+        ['Output satisfied explicit list-format requirement.'],
+      );
+    },
+  };
+}
+
+export function buildDefaultRuleVerifiers(): RuleVerifier[] {
+  return [createJsonSchemaRuleVerifier(), createListFormatRuleVerifier()];
+}
+
+export async function runRuleVerifiers(
+  context: VerifierContext,
+  ruleVerifiers: RuleVerifier[] = buildDefaultRuleVerifiers(),
+): Promise<VerificationResult[]> {
+  const results: VerificationResult[] = [];
+
+  for (const ruleVerifier of ruleVerifiers) {
+    try {
+      const result = await ruleVerifier.verify(context);
+      if (result) {
+        results.push(normalizeVerificationResult(result));
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Unknown rule verifier failure.';
+      results.push(
+        createVerifierFailureResult(
+          `Rule verifier ${ruleVerifier.verifierId} failed safely.`,
+          [`Rule verifier crashed: ${reason}`],
+          {
+            verifierId: ruleVerifier.verifierId,
+            verifierKind: 'rule',
+            suggestedAction: 'manual-confirm',
+            codePrefix: 'rule_verifier_failure',
+          },
+        ),
+      );
+    }
+  }
+
+  return results;
+}
+
+function chooseSuggestedAction(results: VerificationResult[]): VerificationResult['suggestedAction'] {
+  return [...results].sort(
+    (left, right) => SUGGESTED_ACTION_PRIORITY[right.suggestedAction] - SUGGESTED_ACTION_PRIORITY[left.suggestedAction],
+  )[0]?.suggestedAction ?? 'proceed';
+}
+
+function chooseMergedVerdict(results: VerificationResult[]): VerificationResult['verdict'] {
+  if (results.some((result) => result.verdict === 'fail')) {
+    return 'fail';
+  }
+
+  if (results.some((result) => result.verdict === 'warning')) {
+    return 'warning';
+  }
+
+  return 'pass';
+}
+
+function collectMergedFindings(results: VerificationResult[]): VerificationFinding[] {
+  return results.flatMap((result) => result.findings.map((finding) => ({
+    ...finding,
+    verifierId: finding.verifierId ?? result.verifierId,
+    verifierKind: finding.verifierKind ?? (result.verifierKind === 'composite' ? undefined : result.verifierKind),
+  })));
+}
+
+export function mergeVerificationResults(results: VerificationResult[]): VerificationResult {
+  const normalizedResults = results.map((result) => normalizeVerificationResult(result));
+  if (normalizedResults.length === 0) {
+    return createVerifierFailureResult(
+      'Verifier produced no result.',
+      ['No model or rule verifier returned a usable result.'],
+      {
+        verifierId: VERIFIER_COMPOSITE_ID,
+        verifierKind: 'composite',
+        suggestedAction: 'manual-confirm',
+        codePrefix: 'composite_verifier_failure',
+      },
+    );
+  }
+
+  if (normalizedResults.length === 1) {
+    return normalizedResults[0];
+  }
+
+  return createVerificationResult({
+    verifierId: VERIFIER_COMPOSITE_ID,
+    verifierKind: 'composite',
+    verdict: chooseMergedVerdict(normalizedResults),
+    summary: `Combined verifier checks: ${normalizedResults.map((result) => `${result.verifierId}=${result.verdict}`).join(' · ')}`,
+    reasons: unique(normalizedResults.flatMap((result) => result.reasons.map((reason) => `${result.verifierId}: ${reason}`))),
+    suggestedAction: chooseSuggestedAction(normalizedResults),
+    findings: collectMergedFindings(normalizedResults),
   });
 }
 
@@ -228,6 +518,8 @@ export async function verifyTaskWithModel(
         ? `Verifier execution failed: ${error.message}`
         : 'Verifier execution failed with unknown error.';
 
-    return createVerifierFailureResult('Model verifier unavailable.', [reason], 'retry');
+    return createVerifierFailureResult('Model verifier unavailable.', [reason], {
+      suggestedAction: 'retry',
+    });
   }
 }

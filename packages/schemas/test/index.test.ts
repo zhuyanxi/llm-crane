@@ -77,6 +77,31 @@ describe('TaskRequestSchema', () => {
     expect(parsed.findings[0]?.code).toBe('constraint_missing');
   });
 
+  it('parses composite verification result metadata with finding sources', () => {
+    const parsed = VerificationResultSchema.parse({
+      verifierId: 'composite-verifier-v1',
+      verifierKind: 'composite',
+      verdict: 'fail',
+      summary: 'Combined verifier checks: model-consistency-v1=pass · rule-output-format-v1=fail',
+      reasons: ['rule-output-format-v1: Output did not satisfy explicit numbered list requirement.'],
+      suggestedAction: 'retry',
+      findings: [
+        {
+          code: 'format_numbered_list_missing',
+          summary: 'Numbered list rule failed.',
+          detail: 'Expected at least one numbered item.',
+          severity: 'fail',
+          verifierId: 'rule-output-format-v1',
+          verifierKind: 'rule',
+        },
+      ],
+    });
+
+    expect(parsed.verifierKind).toBe('composite');
+    expect(parsed.findings[0]?.verifierId).toBe('rule-output-format-v1');
+    expect(parsed.findings[0]?.verifierKind).toBe('rule');
+  });
+
   it('adds default context priority metadata when contexts are provided', () => {
     const parsed = TaskRequestSchema.parse({
       task: 'Review current file',

@@ -477,6 +477,48 @@ describe('runTaskPipeline', () => {
     expect(rerunResponse.checkpoint.output).toBe('executor result for verifier rerun');
   });
 
+  it('merges model and rule verifier results for explicit hard format rule', async () => {
+    const providerRegistry = {
+      invoke: vi.fn().mockResolvedValue({
+        providerId: 'anthropic',
+        modelId: 'claude-3-5-sonnet-latest',
+        outputText: 'Top risks are auth drift and retry churn.',
+        latencyMs: 205,
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace and return numbered list of top risks.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable', 'Return numbered list output.'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+      },
+      {
+        verifyTaskOutput: async () => createVerifierResult({
+          summary: 'Model verifier passed.',
+          detail: 'Model verifier found no inconsistency.',
+        }),
+      },
+    );
+
+    expect(response.verifierResult?.verifierKind).toBe('composite');
+    expect(response.verifierResult?.verdict).toBe('fail');
+    expect(response.verifierResult?.suggestedAction).toBe('retry');
+    expect(response.verifierResult?.findings.some((finding) => finding.code === 'format_numbered_list_missing')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'verifier.model.finish' && event.metadata.verifierKind === 'model')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'verifier.rule.finish' && event.metadata.verifierKind === 'rule')).toBe(true);
+    expect(response.trace.some((event) => event.stage === 'verifier.finish' && event.metadata.ruleVerifierCount === 1)).toBe(true);
+  });
+
   it('rejects unsupported planner rerun target for simple checkpoint', async () => {
     const providerRegistry = createProviderRegistryStub('simple result');
     const firstResponse = await runTaskPipeline(

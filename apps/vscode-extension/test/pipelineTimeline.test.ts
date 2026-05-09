@@ -179,4 +179,52 @@ describe('buildPipelineTimeline', () => {
 
     expect(timeline[0]?.summary).toBe('warning · action=manual-confirm · Verifier deferred until dedicated strategies land.');
   });
+
+  it('shows merged composite verifier summary in timeline', () => {
+    const timeline = buildPipelineTimeline({
+      pipeline: {
+        version: 'v1',
+        graph: 'complex-v1',
+        route: 'complex',
+        state: 'completed',
+        stages: [
+          {
+            stageId: 'verifier',
+            label: 'Verifier',
+            state: 'completed',
+            dependsOn: ['executor'],
+            startedAt: '2026-05-08T10:00:00.100Z',
+            completedAt: '2026-05-08T10:00:00.120Z',
+            output: {
+              stageId: 'verifier',
+              status: 'completed',
+              detail: 'Combined verifier checks: model-consistency-v1=pass · rule-output-format-v1=fail',
+              result: {
+                verifierId: 'composite-verifier-v1',
+                verifierKind: 'composite',
+                verdict: 'fail',
+                summary: 'Combined verifier checks: model-consistency-v1=pass · rule-output-format-v1=fail',
+                reasons: ['rule-output-format-v1: Output did not satisfy explicit numbered list requirement.'],
+                suggestedAction: 'retry',
+                findings: [
+                  {
+                    code: 'format_numbered_list_missing',
+                    summary: 'Numbered list rule failed.',
+                    detail: 'Expected at least one numbered item.',
+                    severity: 'fail',
+                    verifierId: 'rule-output-format-v1',
+                    verifierKind: 'rule',
+                  },
+                ],
+              },
+            },
+          },
+        ],
+        transitions: [],
+      },
+      trace: [],
+    } satisfies Pick<TaskResponse, 'pipeline' | 'trace'>);
+
+    expect(timeline[0]?.summary).toBe('fail · action=retry · Combined verifier checks: model-consistency-v1=pass · rule-output-format-v1=fail');
+  });
 });
