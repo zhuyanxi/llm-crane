@@ -32,6 +32,15 @@ import {
   type ModelOverrideMode,
 } from './modelOverride';
 import { buildTaskHistoryEntryView, type TaskHistoryEntryView } from './taskHistory';
+import {
+  annotateUpgradeResponse,
+  buildVerificationActionRerunRequest,
+  buildVerificationInsight,
+  createVerificationDecisionResponse,
+  hasVerificationFailure,
+  type VerificationActionButtonView,
+  type VerificationActionId,
+} from './verificationActions';
 
 const RUN_TASK_COMMAND = 'llmCrane.runTask';
 const TASK_PANEL_VIEW_TYPE = 'llmCrane.taskPanel';
@@ -61,6 +70,11 @@ type RerunTaskPanelInboundMessage = {
   targetStageId: RerunnableStageId;
 };
 
+type VerificationActionPanelInboundMessage = {
+  type: 'verificationAction';
+  actionId: VerificationActionId;
+};
+
 type SelectHistoryEntryPanelInboundMessage = {
   type: 'selectHistoryEntry';
   historyId: string;
@@ -70,6 +84,7 @@ type TaskPanelInboundMessage =
   | SubmitTaskPanelInboundMessage
   | PreviewContextPanelInboundMessage
   | RerunTaskPanelInboundMessage
+  | VerificationActionPanelInboundMessage
   | SelectHistoryEntryPanelInboundMessage;
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
@@ -97,6 +112,12 @@ type TaskResultView = {
   latencySummary: string;
   costSummary: string;
   costDetail: string;
+  verificationSummary: string;
+  verificationDetail: string;
+  verificationSuggestedAction: string;
+  verificationReasons: string[];
+  verificationFindings: string[];
+  verificationActions: VerificationActionButtonView[];
   timelineStages: TaskTimelineStageView[];
   rerunTargets: RerunnableStageId[];
   traceEntries: string[];
@@ -286,14 +307,8 @@ async function handleTaskPanelMessage(
         message.overrideModelId,
       );
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
-      const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
-
-      const status: TaskPanelStatus = hasFailureDiagnostic ? 'error' : 'success';
-      const headline = hasFailureDiagnostic
-          ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
-          : readyMode === 'started'
-            ? 'Orchestrator started and responded'
-            : 'Orchestrator response received';
+      const status: TaskPanelStatus = hasTaskFailureState(response) ? 'error' : 'success';
+      const headline = buildTaskResponseHeadline(response, readyMode);
       const detail = `${formatTaskRequestSummary(taskRequest, message.contextMode)} ${formatTaskResponseSummary(response, readyMode, processId)}`;
       const requestPreview = JSON.stringify(taskRequest, null, 2);
       const historyRecord = createTaskHistoryRecord(
@@ -330,6 +345,154 @@ async function handleTaskPanelMessage(
         headline,
         detail,
         submittedTask: taskDraft,
+      });
+    }
+    return;
+  }
+
+  if (isVerificationActionPanelInboundMessage(message)) {
+    const activeHistoryRecord = getActiveTaskHistoryRecord(panelSession);
+
+    if (!activeHistoryRecord) {
+      postTaskStatusWithHistory(webview, panelSession, {
+        status: 'error',
+        headline: 'No verifier result available',
+        detail: 'Run task once before applying verification action.',
+      });
+      return;
+    }
+
+    const catalog = loadModelOverrideCatalog();
+    const verificationInsight = buildVerificationInsight(activeHistoryRecord.response, catalog);
+    if (!verificationInsight.actions.some((action) => action.actionId === message.actionId)) {
+      postTaskStatusWithHistory(webview, panelSession, {
+        status: 'error',
+        headline: 'Verification action unavailable',
+        detail: 'Selected verification action is unavailable for current result.',
+        submittedTask: activeHistoryRecord.submittedTask,
+        requestPreview: activeHistoryRecord.requestPreview,
+        resultView: activeHistoryRecord.resultView,
+      });
+      return;
+    }
+
+    if (message.actionId === 'manual-confirm') {
+      const confirmedResponse = createVerificationDecisionResponse(activeHistoryRecord.response, 'manual-confirm', catalog);
+      const requestPreview = JSON.stringify({ type: 'verificationAction', actionId: 'manual-confirm' }, null, 2);
+      const historyRecord = createTaskHistoryRecord(
+        panelSession,
+        'success',
+        'Verification manually confirmed',
+        'Kept current result after manual confirmation. Verifier risk remains visible in trace and verification panel.',
+        activeHistoryRecord.submittedTask,
+        requestPreview,
+        confirmedResponse,
+      );
+
+      appendTaskHistoryRecord(panelSession, historyRecord);
+      postTaskStatusWithHistory(webview, panelSession, {
+        status: 'success',
+        headline: 'Verification manually confirmed',
+        detail: 'Kept current result after manual confirmation. Verifier risk remains visible in trace and verification panel.',
+        submittedTask: activeHistoryRecord.submittedTask,
+        requestPreview,
+        resultView: historyRecord.resultView,
+      });
+      return;
+    }
+
+    if (message.actionId === 'upgrade-model') {
+      const accepted = await vscode.window.showWarningMessage(
+        'Verifier recommends rerunning executor with higher-cost model. Extra upgrade cost will be recorded in trace and verification panel.',
+        {
+          modal: true,
+          detail: `Current model: ${activeHistoryRecord.response.selectedProvider.modelId}. Target model: ${catalog.defaultComplexModel}.`,
+        },
+        'Upgrade and rerun',
+      );
+
+      if (accepted !== 'Upgrade and rerun') {
+        const declinedResponse = createVerificationDecisionResponse(activeHistoryRecord.response, 'upgrade-declined', catalog);
+        const requestPreview = JSON.stringify({ type: 'verificationAction', actionId: 'upgrade-model', decision: 'declined' }, null, 2);
+        const historyRecord = createTaskHistoryRecord(
+          panelSession,
+          activeHistoryRecord.status,
+          'Automatic upgrade declined',
+          `Declined automatic upgrade. Current result kept on ${activeHistoryRecord.response.selectedProvider.modelId} without rerun.`,
+          activeHistoryRecord.submittedTask,
+          requestPreview,
+          declinedResponse,
+        );
+
+        appendTaskHistoryRecord(panelSession, historyRecord);
+        postTaskStatusWithHistory(webview, panelSession, {
+          status: activeHistoryRecord.status,
+          headline: 'Automatic upgrade declined',
+          detail: `Declined automatic upgrade. Current result kept on ${activeHistoryRecord.response.selectedProvider.modelId} without rerun.`,
+          submittedTask: activeHistoryRecord.submittedTask,
+          requestPreview,
+          resultView: historyRecord.resultView,
+        });
+        return;
+      }
+    }
+
+    postTaskStatusWithHistory(webview, panelSession, {
+      status: 'running',
+      headline: 'Applying verification action',
+      detail: message.actionId === 'retry'
+        ? 'Rerunning executor and verifier with current model settings.'
+        : 'Rerunning executor and verifier with upgraded model settings.',
+      submittedTask: activeHistoryRecord.submittedTask,
+      requestPreview: activeHistoryRecord.requestPreview,
+      resultView: activeHistoryRecord.resultView,
+    });
+
+    try {
+      const rerunRequest = buildVerificationActionRerunRequest(activeHistoryRecord.response, message.actionId, catalog);
+      const { response, readyMode, processId } = await processManager.rerunTask(rerunRequest);
+      const finalResponse = message.actionId === 'upgrade-model'
+        ? annotateUpgradeResponse(activeHistoryRecord.response, response)
+        : response;
+      const status: TaskPanelStatus = hasTaskFailureState(finalResponse) ? 'error' : 'success';
+      const headline = buildTaskResponseHeadline(finalResponse, readyMode);
+      const detail = `${formatTaskResponseSummary(finalResponse, readyMode, processId)} Retained ${finalResponse.runInfo.historyTraceCount} prior trace event(s).`;
+      const requestPreview = JSON.stringify(rerunRequest, null, 2);
+      const historyRecord = createTaskHistoryRecord(
+        panelSession,
+        status,
+        headline,
+        detail,
+        activeHistoryRecord.submittedTask,
+        requestPreview,
+        finalResponse,
+      );
+
+      appendTaskHistoryRecord(panelSession, historyRecord);
+      postTaskStatusWithHistory(webview, panelSession, {
+        status,
+        headline,
+        detail,
+        submittedTask: activeHistoryRecord.submittedTask,
+        requestPreview,
+        resultView: historyRecord.resultView,
+      });
+    } catch (error) {
+      const headline = error instanceof LLMCraneDiagnosticError ? error.diagnostic.summary : 'Verification action blocked';
+      const detail =
+        error instanceof LLMCraneDiagnosticError
+          ? formatDiagnosticDetail(error.diagnostic)
+          : error instanceof Error
+            ? error.message
+            : 'Unexpected LLM Crane error.';
+
+      postTaskStatusWithHistory(webview, panelSession, {
+        status: 'error',
+        headline,
+        detail,
+        submittedTask: activeHistoryRecord.submittedTask,
+        requestPreview: activeHistoryRecord.requestPreview,
+        resultView: activeHistoryRecord.resultView,
       });
     }
     return;
@@ -376,14 +539,8 @@ async function handleTaskPanelMessage(
 
   try {
     const { response, readyMode, processId } = await processManager.rerunTask(rerunRequest);
-    const hasFailureDiagnostic = Boolean(response.diagnostic) || response.providerResult.status === 'failed';
-
-    const status: TaskPanelStatus = hasFailureDiagnostic ? 'error' : 'success';
-    const headline = hasFailureDiagnostic
-        ? response.diagnostic?.summary ?? 'Task completed with failure diagnostics'
-        : readyMode === 'started'
-          ? 'Orchestrator started and responded'
-          : 'Orchestrator response received';
+    const status: TaskPanelStatus = hasTaskFailureState(response) ? 'error' : 'success';
+    const headline = buildTaskResponseHeadline(response, readyMode);
     const detail = `${formatTaskResponseSummary(response, readyMode, processId)} Retained ${response.runInfo.historyTraceCount} prior trace event(s).`;
     const requestPreview = JSON.stringify(rerunRequest, null, 2);
     const historyRecord = createTaskHistoryRecord(
@@ -473,6 +630,19 @@ function isRerunTaskPanelInboundMessage(message: unknown): message is RerunTaskP
 
   const candidate = message as Partial<RerunTaskPanelInboundMessage>;
   return candidate.type === 'rerunTask' && typeof candidate.targetStageId === 'string' && isRerunnableStageId(candidate.targetStageId);
+}
+
+function isVerificationActionPanelInboundMessage(message: unknown): message is VerificationActionPanelInboundMessage {
+  if (typeof message !== 'object' || message === null) {
+    return false;
+  }
+
+  const candidate = message as Partial<VerificationActionPanelInboundMessage>;
+  return candidate.type === 'verificationAction' && isVerificationActionId(candidate.actionId);
+}
+
+function isVerificationActionId(value: unknown): value is VerificationActionId {
+  return value === 'retry' || value === 'upgrade-model' || value === 'manual-confirm';
 }
 
 function isSelectHistoryEntryPanelInboundMessage(message: unknown): message is SelectHistoryEntryPanelInboundMessage {
@@ -772,6 +942,9 @@ function formatTaskResponseSummary(
   const reasonerSuffix = taskResponse.reasonerResult
     ? ` Reasoner: ${taskResponse.reasonerResult.status}/${taskResponse.reasonerResult.decisionSource}.`
     : '';
+  const verifierSuffix = taskResponse.verifierResult
+    ? ` Verifier: ${taskResponse.verifierResult.verdict}/${taskResponse.verifierResult.suggestedAction}.`
+    : '';
   const runSuffix = taskResponse.runInfo.mode === 'stage-rerun'
     ? ` Execution: stage rerun from ${taskResponse.runInfo.targetStageId}.`
     : ' Execution: full run.';
@@ -783,7 +956,25 @@ function formatTaskResponseSummary(
     ? ` Selection: ${overrideSummary.summary}.`
     : ` Selection: ${overrideSummary.summary}. ${overrideSummary.detail}`;
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${runSuffix}${overrideSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${verifierSuffix}${runSuffix}${overrideSuffix}${diagnosticSuffix}`;
+}
+
+function hasTaskFailureState(taskResponse: TaskResponse): boolean {
+  return Boolean(taskResponse.diagnostic) || taskResponse.providerResult.status === 'failed' || hasVerificationFailure(taskResponse);
+}
+
+function buildTaskResponseHeadline(taskResponse: TaskResponse, readyMode: OrchestratorReadyMode): string {
+  if (taskResponse.diagnostic) {
+    return taskResponse.diagnostic.summary;
+  }
+
+  if (hasVerificationFailure(taskResponse)) {
+    return 'Task completed with verification failure';
+  }
+
+  return readyMode === 'started'
+    ? 'Orchestrator started and responded'
+    : 'Orchestrator response received';
 }
 
 function formatRunModeSummary(taskResponse: TaskResponse): string {
@@ -915,6 +1106,7 @@ function formatRunModeEntries(taskResponse: TaskResponse): string[] {
 
 function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
   const routingInsight = buildRoutingInsight(taskResponse);
+  const verificationInsight = buildVerificationInsight(taskResponse, loadModelOverrideCatalog());
   const traceEntries = taskResponse.trace.map((traceEvent) => {
     const metadataEntries = Object.entries(traceEvent.metadata);
     const metadataSuffix =
@@ -955,6 +1147,12 @@ function createTaskResultView(taskResponse: TaskResponse): TaskResultView {
     latencySummary,
     costSummary,
     costDetail,
+    verificationSummary: verificationInsight.summary,
+    verificationDetail: verificationInsight.detail,
+    verificationSuggestedAction: verificationInsight.suggestedActionLabel,
+    verificationReasons: verificationInsight.reasons,
+    verificationFindings: verificationInsight.findings,
+    verificationActions: verificationInsight.actions,
     timelineStages: buildPipelineTimeline(taskResponse),
     rerunTargets: getSupportedRerunTargets(taskResponse),
     traceEntries: [
@@ -1434,6 +1632,17 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         line-height: 1.5;
       }
 
+      .verification-actions {
+        display: grid;
+        gap: 10px;
+        margin-top: 4px;
+      }
+
+      .verification-action {
+        display: grid;
+        gap: 6px;
+      }
+
       .trace-list {
         display: grid;
         gap: 8px;
@@ -1626,13 +1835,12 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S11</p>
+        <p class="eyebrow">V1-S16</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
           Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
-          then submit from inside VS Code. Current step adds manual model override controls, configured-model validation,
-          and clearer rerun guidance while keeping routing explanation, timeline, context preview, diagnostics, cache,
-          execution path, trace, token usage, latency, and cost estimate.
+          then submit from inside VS Code. Current step adds verification failure handling so verifier reasons, suggested actions,
+          retry paths, model-upgrade reruns, manual confirmation, and upgrade cost deltas are visible without leaving the panel.
         </p>
       </header>
 
@@ -1814,6 +2022,21 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="hint" id="result-cost-detail"></p>
           </div>
         </div>
+        <div class="meta-card" id="verification-panel" hidden>
+          <span class="preview-label">Verification</span>
+          <p class="meta-value" id="result-verification-summary"></p>
+          <p class="hint" id="result-verification-detail"></p>
+          <p class="hint" id="result-verification-action"></p>
+          <div id="verification-reasons-block" hidden>
+            <span class="preview-label">Reasons</span>
+            <ul class="trace-list" id="result-verification-reasons"></ul>
+          </div>
+          <div id="verification-findings-block" hidden>
+            <span class="preview-label">Findings</span>
+            <ul class="trace-list" id="result-verification-findings"></ul>
+          </div>
+          <div class="verification-actions" id="verification-actions"></div>
+        </div>
         <div class="actions">
           <div class="action-buttons">
             <select id="rerun-stage" disabled>
@@ -1841,6 +2064,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <li>Choose template default, selection-first, current-file-first, or manual-only mode, then refresh preview if editor state changed.</li>
           <li>Choose automatic model selection, default-model override, or specific configured model before submit.</li>
           <li>Press <strong>Run Task</strong> or <strong>Run Without Cache</strong> and inspect output, diagnostic category, cache state, model choice, path summary, trace, or failure detail.</li>
+          <li>Use verification panel actions to retry executor, accept verifier risk, or confirm automatic model upgrade when verifier blocks the result.</li>
           <li>After result lands, choose checkpoint stage and press <strong>Rerun From Stage</strong> to resume from Planner, Reasoner, Verifier, or Executor using latest checkpointed override state when available.</li>
         </ol>
       </section>
@@ -1917,6 +2141,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const resultLatency = document.getElementById('result-latency');
       const resultCost = document.getElementById('result-cost');
       const resultCostDetail = document.getElementById('result-cost-detail');
+      const verificationPanel = document.getElementById('verification-panel');
+      const resultVerificationSummary = document.getElementById('result-verification-summary');
+      const resultVerificationDetail = document.getElementById('result-verification-detail');
+      const resultVerificationAction = document.getElementById('result-verification-action');
+      const verificationReasonsBlock = document.getElementById('verification-reasons-block');
+      const resultVerificationReasons = document.getElementById('result-verification-reasons');
+      const verificationFindingsBlock = document.getElementById('verification-findings-block');
+      const resultVerificationFindings = document.getElementById('result-verification-findings');
+      const verificationActions = document.getElementById('verification-actions');
       const timelineList = document.getElementById('timeline-list');
       const rerunStageSelect = document.getElementById('rerun-stage');
       const rerunStageButton = document.getElementById('rerun-stage-button');
@@ -2283,6 +2516,37 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         );
       }
 
+      function renderVerificationActions(actions) {
+        if (!actions || actions.length === 0) {
+          verificationActions.replaceChildren();
+          return;
+        }
+
+        verificationActions.replaceChildren(
+          ...actions.map((action) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'verification-action';
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = action.label;
+            if (action.tone === 'secondary') {
+              button.className = 'secondary-button';
+            }
+            button.addEventListener('click', () => {
+              vscode.postMessage({ type: 'verificationAction', actionId: action.actionId });
+            });
+
+            const hint = document.createElement('span');
+            hint.className = 'hint';
+            hint.textContent = action.detail;
+
+            wrapper.append(button, hint);
+            return wrapper;
+          }),
+        );
+      }
+
       function setStatus(status, headline, detail, taskText, payloadPreview, resultView, historyEntries) {
         statusPanel.className = 'status-panel status-' + status;
         statusBadge.textContent = statusLabels[status] ?? 'Idle';
@@ -2332,6 +2596,30 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = resultView.latencySummary;
           resultCost.textContent = resultView.costSummary;
           resultCostDetail.textContent = resultView.costDetail;
+          const hasVerificationData = resultView.verificationSummary && resultView.verificationSummary !== 'No verifier result';
+          verificationPanel.hidden = !hasVerificationData;
+          resultVerificationSummary.textContent = resultView.verificationSummary;
+          resultVerificationDetail.textContent = resultView.verificationDetail;
+          resultVerificationAction.textContent = hasVerificationData
+            ? 'Suggested action: ' + resultView.verificationSuggestedAction
+            : '';
+          verificationReasonsBlock.hidden = !resultView.verificationReasons || resultView.verificationReasons.length === 0;
+          resultVerificationReasons.replaceChildren(
+            ...((resultView.verificationReasons || []).map((entry) => {
+              const item = document.createElement('li');
+              item.textContent = entry;
+              return item;
+            }))
+          );
+          verificationFindingsBlock.hidden = !resultView.verificationFindings || resultView.verificationFindings.length === 0;
+          resultVerificationFindings.replaceChildren(
+            ...((resultView.verificationFindings || []).map((entry) => {
+              const item = document.createElement('li');
+              item.textContent = entry;
+              return item;
+            }))
+          );
+          renderVerificationActions(resultView.verificationActions || []);
           renderTimelineStages(resultView.timelineStages);
           rerunStageSelect.replaceChildren(
             ...[
@@ -2387,6 +2675,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           resultLatency.textContent = '';
           resultCost.textContent = '';
           resultCostDetail.textContent = '';
+          verificationPanel.hidden = true;
+          resultVerificationSummary.textContent = '';
+          resultVerificationDetail.textContent = '';
+          resultVerificationAction.textContent = '';
+          verificationReasonsBlock.hidden = true;
+          resultVerificationReasons.replaceChildren();
+          verificationFindingsBlock.hidden = true;
+          resultVerificationFindings.replaceChildren();
+          verificationActions.replaceChildren();
           timelineList.replaceChildren();
           rerunStageSelect.replaceChildren();
           rerunStageSelect.disabled = true;

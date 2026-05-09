@@ -3,7 +3,7 @@ import { describeTaskModelOverride } from './modelOverride';
 
 type TaskHistorySource = Pick<
   TaskResponse,
-  'routeDecision' | 'selectedProvider' | 'runInfo' | 'cacheInfo' | 'providerResult' | 'diagnostic' | 'checkpoint' | 'trace'
+  'routeDecision' | 'selectedProvider' | 'runInfo' | 'cacheInfo' | 'providerResult' | 'diagnostic' | 'checkpoint' | 'trace' | 'verifierResult'
 >;
 
 export type TaskHistoryEntryView = {
@@ -29,7 +29,12 @@ export function buildTaskHistoryEntryView(
     formatCacheTag(taskResponse),
     formatRunTag(taskResponse),
     ...(override.summary === 'Automatic routing' ? [] : ['override']),
-    ...(taskResponse.providerResult.status === 'failed' || taskResponse.diagnostic ? ['failed'] : []),
+    ...(taskResponse.verifierResult && taskResponse.verifierResult.verdict !== 'pass'
+      ? [`verify:${taskResponse.verifierResult.verdict}`]
+      : []),
+    ...(taskResponse.providerResult.status === 'failed' || taskResponse.diagnostic || taskResponse.verifierResult?.verdict === 'fail'
+      ? ['failed']
+      : []),
   ];
 
   return {

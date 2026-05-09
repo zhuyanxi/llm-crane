@@ -176,4 +176,84 @@ describe('buildTaskHistoryEntryView', () => {
     expect(historyEntry.detail).toContain('rerun from reasoner');
     expect(historyEntry.tags).toEqual(['complex', 'cache:bypassed', 'rerun:reasoner', 'override', 'failed']);
   });
+
+  it('surfaces verifier failure tags even when provider execution succeeded', () => {
+    const historyEntry = buildTaskHistoryEntryView(
+      'run-3',
+      'Return a numbered list that satisfies verifier checks',
+      {
+        routeDecision: {
+          status: 'routed',
+          route: 'complex',
+          reason: 'Verifier-enforced output format.',
+          confidence: 0.8,
+          complexityScore: 9,
+          scoreBreakdown: [],
+          strategy: 'rules-v1',
+        },
+        selectedProvider: {
+          providerId: 'openai',
+          modelId: 'gpt-4.1-mini',
+          reason: 'Complex default selected.',
+        },
+        runInfo: {
+          mode: 'full',
+          reusedCheckpointStages: [],
+          historyTraceCount: 0,
+          historyTransitionCount: 0,
+          detail: 'Full pipeline run.',
+        },
+        cacheInfo: {
+          status: 'miss',
+          key: 'ghi',
+          storage: 'sqlite',
+          detail: 'cache miss',
+        },
+        providerResult: {
+          status: 'completed',
+          providerId: 'openai',
+          modelId: 'gpt-4.1-mini',
+          outputText: 'plain paragraph output',
+        },
+        verifierResult: {
+          verifierId: 'composite-verifier-v1',
+          verifierKind: 'composite',
+          verdict: 'fail',
+          summary: 'Numbered list missing.',
+          reasons: ['Output did not satisfy numbered list requirement.'],
+          suggestedAction: 'retry',
+          findings: [],
+        },
+        checkpoint: {
+          taskRequest: {
+            task: 'Return numbered list',
+            qualityBar: 'balanced',
+            cacheMode: 'default',
+            contexts: [],
+            constraints: ['Return numbered list.'],
+          },
+          pipeline: {
+            version: 'v1',
+            graph: 'complex-v1',
+            route: 'complex',
+            state: 'completed',
+            stages: [],
+            transitions: [],
+          },
+          trace: [],
+          capturedAt: '2026-05-08T12:10:00.000Z',
+        },
+        trace: [
+          {
+            stage: 'verifier.finish',
+            status: 'completed',
+            timestamp: '2026-05-08T12:10:00.000Z',
+            metadata: {},
+          },
+        ],
+      } satisfies Pick<TaskResponse, 'routeDecision' | 'selectedProvider' | 'runInfo' | 'cacheInfo' | 'providerResult' | 'verifierResult' | 'checkpoint' | 'trace'>,
+    );
+
+    expect(historyEntry.tags).toEqual(['complex', 'cache:miss', 'full', 'verify:fail', 'failed']);
+  });
 });
