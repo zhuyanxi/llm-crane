@@ -317,6 +317,18 @@ describe('verificationActions', () => {
     expect(insight.actions[0]?.label).toContain('claude-3-5-sonnet-latest');
   });
 
+  it('suppresses upgrade action when task policy disables verification upgrade', () => {
+    const response = createTaskResponse();
+    response.checkpoint.taskRequest.policyOverrides = {
+      verificationUpgradeAllowed: false,
+    };
+
+    const insight = buildVerificationInsight(response, modelOverrideCatalog);
+
+    expect(insight.detail).toContain('Upgrade blocked by user policy');
+    expect(insight.actions.map((action) => action.actionId)).toEqual(['manual-confirm']);
+  });
+
   it('falls back to manual confirmation when already on complex default model', () => {
     const insight = buildVerificationInsight(
       createTaskResponse({ modelId: 'claude-3-5-sonnet-latest' }),
@@ -341,6 +353,17 @@ describe('verificationActions', () => {
       status: 'retrying',
       timestamp: '2026-05-09T10:05:00.000Z',
     });
+  });
+
+  it('blocks upgrade rerun request when task policy disables verification upgrade', () => {
+    const response = createTaskResponse();
+    response.checkpoint.taskRequest.policyOverrides = {
+      verificationUpgradeAllowed: false,
+    };
+
+    expect(() => buildVerificationActionRerunRequest(response, 'upgrade-model', modelOverrideCatalog)).toThrow(
+      'Verification upgrade blocked by user policy',
+    );
   });
 
   it('records declined automatic upgrade in trace and checkpoint trace', () => {

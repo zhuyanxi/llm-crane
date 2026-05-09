@@ -63,4 +63,14 @@ describe('buildModelPolicyOverrides', () => {
     expect(description.summary).toBe('Manual override');
     expect(description.detail).toContain('complex default model claude-3-5-sonnet-latest');
   });
+
+  it('includes user policy restrictions in override description', () => {
+    const description = describeTaskModelOverride({
+      fallbackEnabled: false,
+      verificationUpgradeAllowed: false,
+    });
+
+    expect(description.detail).toContain('Automatic fallback disabled by user policy.');
+    expect(description.detail).toContain('Verification upgrade disabled by user policy.');
+  });
 });

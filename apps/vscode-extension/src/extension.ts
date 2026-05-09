@@ -26,12 +26,18 @@ import {
 import { buildPipelineTimeline, type TaskTimelineStageView } from './pipelineTimeline';
 import { buildRoutingInsight } from './routingInsights';
 import {
-  buildModelPolicyOverrides,
   describeTaskModelOverride,
   loadModelOverrideCatalog,
+  type ModelOverrideCatalog,
   type ModelOverrideMode,
 } from './modelOverride';
 import { buildTaskHistoryEntryView, type TaskHistoryEntryView } from './taskHistory';
+import {
+  DEFAULT_USER_TASK_POLICY_SETTINGS,
+  describeUserTaskPolicySettings,
+  parseUserTaskPolicySettings,
+  resolveUserTaskPolicyOverrides,
+} from './userTaskPolicy';
 import {
   annotateUpgradeResponse,
   buildVerificationActionRerunRequest,
@@ -829,7 +835,14 @@ function buildTaskRequest(
   const normalizedTask = task.trim();
   const normalizedTemplateValues = normalizeTemplateValues(templateValues);
   const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
-  const policyOverrides = buildModelPolicyOverrides(modelOverrideMode, overrideModelId, loadModelOverrideCatalog());
+  const modelOverrideCatalog = loadModelOverrideCatalog();
+  const userTaskPolicySettings = loadUserTaskPolicySettingsForCurrentWorkspace(modelOverrideCatalog);
+  const policyOverrides = resolveUserTaskPolicyOverrides(
+    modelOverrideMode,
+    overrideModelId,
+    modelOverrideCatalog,
+    userTaskPolicySettings,
+  );
 
   if (templateDefinition) {
     validateTemplateInputs(templateDefinition, normalizedTemplateValues);
@@ -861,6 +874,36 @@ function buildTaskRequest(
     contexts: plan.contexts,
     policyOverrides,
   });
+}
+
+function readUserTaskPolicySettingsSource() {
+  const configuration = vscode.workspace.getConfiguration('llmCrane');
+
+  return {
+    defaultModelStrategy: configuration.get('defaultModelStrategy'),
+    defaultSpecificModelId: configuration.get('defaultSpecificModelId'),
+    allowAutomaticFallback: configuration.get('allowAutomaticFallback'),
+    allowVerificationUpgrade: configuration.get('allowVerificationUpgrade'),
+  };
+}
+
+function loadUserTaskPolicySettingsForCurrentWorkspace(catalog: ModelOverrideCatalog) {
+  return parseUserTaskPolicySettings(readUserTaskPolicySettingsSource(), catalog);
+}
+
+function tryLoadUserTaskPolicySettingsForCurrentWorkspace(catalog: ModelOverrideCatalog) {
+  try {
+    const settings = loadUserTaskPolicySettingsForCurrentWorkspace(catalog);
+    return {
+      settings,
+      error: undefined,
+    };
+  } catch (error) {
+    return {
+      settings: DEFAULT_USER_TASK_POLICY_SETTINGS,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function formatTaskPolicyOverride(policyOverrides: TaskPolicyOverrides | undefined, selectedModelId?: string): string {
@@ -1327,6 +1370,9 @@ function postContextPreview(webview: vscode.Webview, message: ContextPreviewMess
 function getTaskPanelHtml(webview: vscode.Webview): string {
   const nonce = getNonce();
   const modelOverrideCatalog = loadModelOverrideCatalog();
+  const userTaskPolicyState = tryLoadUserTaskPolicySettingsForCurrentWorkspace(modelOverrideCatalog);
+  const userTaskPolicyInsight = describeUserTaskPolicySettings(userTaskPolicyState.settings);
+  const userDefaultModeLabel = userTaskPolicyInsight.summary.replace('User default: ', '');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -1874,13 +1920,15 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <div class="field-group">
           <label for="model-override-mode">Model override</label>
           <select id="model-override-mode"${modelOverrideCatalog.available ? '' : ' disabled'}>
-            <option value="auto" selected>Auto</option>
+            <option value="auto" selected>Use user default (${userDefaultModeLabel})</option>
             <option value="simple-default">Use simple default (${modelOverrideCatalog.defaultSimpleModel})</option>
             <option value="complex-default">Use complex default (${modelOverrideCatalog.defaultComplexModel})</option>
             <option value="specific">Choose specific model</option>
           </select>
           <span class="hint" id="model-override-hint">${modelOverrideCatalog.available
-            ? `Auto follows router. Simple default=${modelOverrideCatalog.defaultSimpleModel} · complex default=${modelOverrideCatalog.defaultComplexModel}.`
+            ? userTaskPolicyState.error
+              ? `User policy configuration invalid. ${userTaskPolicyState.error}`
+              : `${userTaskPolicyInsight.summary}. ${userTaskPolicyInsight.detail}`
             : `Model override unavailable. ${modelOverrideCatalog.error ?? 'Runtime configuration missing.'}`}</span>
         </div>
 
@@ -2074,6 +2122,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const vscode = acquireVsCodeApi();
       const taskTemplates = ${JSON.stringify(BUILT_IN_TASK_TEMPLATES)};
       const modelOverrideCatalog = ${JSON.stringify(modelOverrideCatalog)};
+      const userTaskPolicy = ${JSON.stringify({
+        settings: userTaskPolicyState.settings,
+        error: userTaskPolicyState.error,
+        insight: userTaskPolicyInsight,
+      })};
       const customTaskTemplateId = '${CUSTOM_TASK_TEMPLATE_ID}';
       const statusLabels = {
         idle: 'Idle',
@@ -2294,14 +2347,16 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         specificModelBlock.hidden = !isSpecificMode;
         specificModelInput.disabled = !isSpecificMode || modelOverrideCatalog.options.length === 0;
 
-        if (selectedMode === 'simple-default') {
+        if (userTaskPolicy.error) {
+          modelOverrideHint.textContent = 'User policy configuration invalid. ' + userTaskPolicy.error;
+        } else if (selectedMode === 'simple-default') {
           modelOverrideHint.textContent = 'Pinned to simple default model ' + modelOverrideCatalog.defaultSimpleModel + '.';
         } else if (selectedMode === 'complex-default') {
           modelOverrideHint.textContent = 'Pinned to complex default model ' + modelOverrideCatalog.defaultComplexModel + '.';
         } else if (selectedMode === 'specific') {
           modelOverrideHint.textContent = 'Pinned to specific configured model. Route still decides pipeline path.';
         } else {
-          modelOverrideHint.textContent = 'Auto follows router. Simple default=' + modelOverrideCatalog.defaultSimpleModel + ' · complex default=' + modelOverrideCatalog.defaultComplexModel + '.';
+          modelOverrideHint.textContent = userTaskPolicy.insight.summary + '. ' + userTaskPolicy.insight.detail;
         }
 
         specificModelHint.textContent = isSpecificMode

@@ -237,6 +237,8 @@ export const TaskTemplateInputSchema = z.object({
   values: z.record(z.string(), z.string()).default({}),
 });
 
+export const TaskModelStrategySchema = z.enum(['auto', 'simple-default', 'complex-default', 'specific']);
+
 export const TaskModelOverrideSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('simple-default'),
@@ -252,6 +254,15 @@ export const TaskModelOverrideSchema = z.discriminatedUnion('mode', [
 
 export const TaskPolicyOverridesSchema = z.object({
   modelOverride: TaskModelOverrideSchema.optional(),
+  fallbackEnabled: z.boolean().optional(),
+  verificationUpgradeAllowed: z.boolean().optional(),
+});
+
+export const UserTaskPolicySettingsSchema = z.object({
+  defaultModelStrategy: TaskModelStrategySchema.default('auto'),
+  defaultSpecificModelId: z.string().min(1).optional(),
+  allowAutomaticFallback: z.boolean().default(true),
+  allowVerificationUpgrade: z.boolean().default(true),
 });
 
 export const StructuredTaskTemplateSchema = z.object({
@@ -881,7 +892,9 @@ export type TaskTemplateField = z.infer<typeof TaskTemplateFieldSchema>;
 export type TaskTemplateDefinition = z.infer<typeof TaskTemplateDefinitionSchema>;
 export type TaskTemplateInput = z.infer<typeof TaskTemplateInputSchema>;
 export type TaskModelOverride = z.infer<typeof TaskModelOverrideSchema>;
+export type TaskModelStrategy = z.infer<typeof TaskModelStrategySchema>;
 export type TaskPolicyOverrides = z.infer<typeof TaskPolicyOverridesSchema>;
+export type UserTaskPolicySettings = z.infer<typeof UserTaskPolicySettingsSchema>;
 export type StructuredTaskTemplate = z.infer<typeof StructuredTaskTemplateSchema>;
 export type StructuredTaskTargetKind = z.infer<typeof StructuredTaskTargetKindSchema>;
 export type StructuredTaskTarget = z.infer<typeof StructuredTaskTargetSchema>;

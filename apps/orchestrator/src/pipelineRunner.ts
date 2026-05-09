@@ -280,6 +280,59 @@ function resolveFallbackCandidates(config: RuntimeConfig, modelSelection: Resolv
   return [...new Set(configuredCandidates.filter((candidate) => candidate !== modelSelection.modelId))];
 }
 
+function resolveFallbackCandidatesForRequest(
+  config: RuntimeConfig,
+  taskRequest: TaskRequest,
+  modelSelection: ResolvedModelSelection,
+): string[] {
+  if (taskRequest.policyOverrides?.fallbackEnabled === false) {
+    return [];
+  }
+
+  return resolveFallbackCandidates(config, modelSelection);
+}
+
+function applyVerificationPolicyOverrides(taskRequest: TaskRequest, verifierResult: VerificationResult): VerificationResult {
+  if (
+    taskRequest.policyOverrides?.verificationUpgradeAllowed === false
+    && verifierResult.suggestedAction === 'upgrade-model'
+  ) {
+    return {
+      ...verifierResult,
+      suggestedAction: 'manual-confirm',
+      reasons: [...verifierResult.reasons, 'User policy disabled verification-triggered model upgrade for this request.'],
+    };
+  }
+
+  return verifierResult;
+}
+
+function hasRequestPolicyOverride(taskRequest: TaskRequest, modelSelection: ResolvedModelSelection): boolean {
+  return Boolean(
+    modelSelection.overrideMode
+      || taskRequest.policyOverrides?.fallbackEnabled === false
+      || taskRequest.policyOverrides?.verificationUpgradeAllowed === false,
+  );
+}
+
+function buildPolicyOverrideDetail(taskRequest: TaskRequest, modelSelection: ResolvedModelSelection, modelId: string, route: string): string {
+  const detailParts = [
+    modelSelection.overrideMode ? `mode=${modelSelection.overrideMode}` : 'mode=auto',
+    `model=${modelId}`,
+    `route=${route}`,
+  ];
+
+  if (taskRequest.policyOverrides?.fallbackEnabled === false) {
+    detailParts.push('fallback=disabled');
+  }
+
+  if (taskRequest.policyOverrides?.verificationUpgradeAllowed === false) {
+    detailParts.push('verificationUpgrade=disabled');
+  }
+
+  return detailParts.join('; ');
+}
+
 function isFallbackEligibleProviderError(providerResult: ProviderExecutionResult): boolean {
   if (providerResult.status !== 'failed' || !providerResult.error) {
     return false;
@@ -921,7 +974,7 @@ export async function runTaskPipeline(
   }
 
   const modelSelection = resolveModelSelection(config, taskRequest, routeDecision);
-  const fallbackCandidates = resolveFallbackCandidates(config, modelSelection);
+  const fallbackCandidates = resolveFallbackCandidatesForRequest(config, taskRequest, modelSelection);
   const reusedExecutorResult = shouldReuseCheckpointStage(runMode, 'executor') ? rerunRequest?.checkpoint.providerResult : undefined;
   let modelId = reusedExecutorResult?.modelId ?? modelSelection.modelId;
   let providerTarget = resolveProviderTarget(providerRegistry, modelId);
@@ -930,14 +983,16 @@ export async function runTaskPipeline(
   pipelineMachine.updateContext({
     providerTarget,
   });
-  if (modelSelection.overrideMode) {
-    trace.add('policy.override', 'completed', `mode=${modelSelection.overrideMode}; model=${modelId}; route=${routeDecision.route}`, {
+  if (hasRequestPolicyOverride(taskRequest, modelSelection)) {
+    trace.add('policy.override', 'completed', buildPolicyOverrideDetail(taskRequest, modelSelection, modelId, routeDecision.route), {
       metadata: compactMetadata({
         mode: modelSelection.overrideMode,
         modelId,
         providerId,
         route: routeDecision.route,
         routeDefaultModel: getModelIdForRoute(config, routeDecision),
+        fallbackEnabled: taskRequest.policyOverrides?.fallbackEnabled,
+        verificationUpgradeAllowed: taskRequest.policyOverrides?.verificationUpgradeAllowed,
       }),
     });
   }
@@ -1283,7 +1338,10 @@ export async function runTaskPipeline(
           );
         }
 
-        verifierResult = dependencies.mergeVerificationResults([modelVerifierResult, ...ruleVerifierResults]);
+        verifierResult = applyVerificationPolicyOverrides(
+          taskRequest,
+          dependencies.mergeVerificationResults([modelVerifierResult, ...ruleVerifierResults]),
+        );
 
         pipelineMachine.updateContext({
           verifierResult,
@@ -1312,12 +1370,12 @@ export async function runTaskPipeline(
         );
       } catch (error) {
         const reason = `Verifier stage crashed: ${toErrorMessage(error)}`;
-        verifierResult = createVerifierFailureResult('Verifier stage failed safely.', [reason], {
+        verifierResult = applyVerificationPolicyOverrides(taskRequest, createVerifierFailureResult('Verifier stage failed safely.', [reason], {
           verifierId: 'verifier-stage-v1',
           verifierKind: 'composite',
           suggestedAction: 'manual-confirm',
           codePrefix: 'verifier_stage_crash',
-        });
+        }));
         pipelineMachine.updateContext({
           verifierResult,
         });

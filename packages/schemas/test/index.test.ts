@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { BUILT_IN_TASK_TEMPLATES, OrchestratorEventSchema, OrchestratorRequestSchema, RuntimeConfigSchema, TaskRequestSchema, VerificationResultSchema } from '../src/index';
+import {
+  BUILT_IN_TASK_TEMPLATES,
+  OrchestratorEventSchema,
+  OrchestratorRequestSchema,
+  RuntimeConfigSchema,
+  TaskRequestSchema,
+  UserTaskPolicySettingsSchema,
+  VerificationResultSchema,
+} from '../src/index';
 
 describe('TaskRequestSchema', () => {
   it('parses minimal task request', () => {
@@ -42,6 +50,8 @@ describe('TaskRequestSchema', () => {
           mode: 'specific',
           modelId: 'claude-3-5-sonnet-latest',
         },
+        fallbackEnabled: false,
+        verificationUpgradeAllowed: false,
       },
     });
 
@@ -51,6 +61,22 @@ describe('TaskRequestSchema', () => {
     }
 
     expect(parsed.policyOverrides.modelOverride.modelId).toBe('claude-3-5-sonnet-latest');
+    expect(parsed.policyOverrides.fallbackEnabled).toBe(false);
+    expect(parsed.policyOverrides.verificationUpgradeAllowed).toBe(false);
+  });
+
+  it('parses user task policy settings', () => {
+    const parsed = UserTaskPolicySettingsSchema.parse({
+      defaultModelStrategy: 'specific',
+      defaultSpecificModelId: 'claude-3-5-sonnet-latest',
+      allowAutomaticFallback: false,
+      allowVerificationUpgrade: false,
+    });
+
+    expect(parsed.defaultModelStrategy).toBe('specific');
+    expect(parsed.defaultSpecificModelId).toBe('claude-3-5-sonnet-latest');
+    expect(parsed.allowAutomaticFallback).toBe(false);
+    expect(parsed.allowVerificationUpgrade).toBe(false);
   });
 
   it('parses shared verification result metadata', () => {

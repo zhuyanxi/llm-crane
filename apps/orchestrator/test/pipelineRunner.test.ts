@@ -477,6 +477,45 @@ describe('runTaskPipeline', () => {
     expect(rerunResponse.checkpoint.output).toBe('executor result for verifier rerun');
   });
 
+  it('downgrades verifier upgrade suggestion when request policy disables verification upgrade', async () => {
+    const providerRegistry = createProviderRegistryStub('complex result');
+
+    const response = await runTaskPipeline(
+      runtimeConfig,
+      providerRegistry as never,
+      {
+        task: 'Analyze workspace and verify risky output.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+        policyOverrides: {
+          verificationUpgradeAllowed: false,
+        },
+      },
+      {
+        verifyTaskOutput: async () => createVerifierResult({
+          verdict: 'fail',
+          suggestedAction: 'upgrade-model',
+          summary: 'Verifier found missing evidence.',
+          findingCode: 'reasoning_gap',
+          detail: 'Output over-claimed without proof.',
+        }),
+      },
+    );
+
+    const policyEvent = response.trace.find((event) => event.stage === 'policy.override');
+
+    expect(response.verifierResult?.suggestedAction).toBe('manual-confirm');
+    expect(response.verifierResult?.reasons).toContain('User policy disabled verification-triggered model upgrade for this request.');
+    expect(policyEvent?.metadata.verificationUpgradeAllowed).toBe(false);
+  });
+
   it('merges model and rule verifier results for explicit hard format rule', async () => {
     const providerRegistry = {
       invoke: vi.fn().mockResolvedValue({
@@ -761,6 +800,54 @@ describe('runTaskPipeline', () => {
     expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
     expect(response.trace.some((event) => event.stage === 'executor.fallback')).toBe(false);
     expect(response.diagnostic?.code).toBe('provider.unsupported_model');
+  });
+
+  it('keeps provider failure when request policy disables fallback even if runtime fallback is enabled', async () => {
+    const providerRegistry = {
+      invoke: vi.fn(async () => {
+        throw new ProviderInvocationError('Selected model unavailable', {
+          providerId: 'anthropic',
+          code: 'unsupported_model',
+          retriable: false,
+          statusCode: 404,
+        });
+      }),
+    };
+
+    const response = await runTaskPipeline(
+      {
+        ...runtimeConfig,
+        providerFallback: {
+          enabled: true,
+          simple: [],
+          complex: ['gpt-4o-mini'],
+        },
+      },
+      providerRegistry as never,
+      {
+        task: 'Analyze whole workspace for architecture risk and propose robust fixes.',
+        qualityBar: 'high',
+        constraints: ['Keep public API stable'],
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            languageId: 'markdown',
+            content: 'Repo-wide architecture scan.',
+          },
+        ],
+        policyOverrides: {
+          fallbackEnabled: false,
+        },
+      },
+    );
+
+    const policyEvent = response.trace.find((event) => event.stage === 'policy.override');
+
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(1);
+    expect(response.providerResult.status).toBe('failed');
+    expect(response.trace.some((event) => event.stage === 'executor.fallback')).toBe(false);
+    expect(policyEvent?.metadata.fallbackEnabled).toBe(false);
   });
 
   it('runs simple path end to end through ollama runtime profile', async () => {

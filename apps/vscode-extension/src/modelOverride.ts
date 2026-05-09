@@ -156,11 +156,12 @@ export function describeTaskModelOverride(
   policyOverrides: TaskPolicyOverrides | undefined,
   selectedModelId?: string,
 ): { summary: string; detail: string } {
+  const restrictionDetails = describePolicyRestrictions(policyOverrides);
   const override = policyOverrides?.modelOverride;
   if (!override) {
     return {
       summary: 'Automatic routing',
-      detail: 'Model followed automatic route selection.',
+      detail: ['Model followed automatic route selection.', ...restrictionDetails].join(' '),
     };
   }
 
@@ -168,23 +169,43 @@ export function describeTaskModelOverride(
     case 'simple-default':
       return {
         summary: 'Manual override',
-        detail: selectedModelId
-          ? `Pinned execution to simple default model ${selectedModelId}.`
-          : 'Pinned execution to configured simple default model.',
+        detail: [
+          selectedModelId
+            ? `Pinned execution to simple default model ${selectedModelId}.`
+            : 'Pinned execution to configured simple default model.',
+          ...restrictionDetails,
+        ].join(' '),
       };
     case 'complex-default':
       return {
         summary: 'Manual override',
-        detail: selectedModelId
-          ? `Pinned execution to complex default model ${selectedModelId}.`
-          : 'Pinned execution to configured complex default model.',
+        detail: [
+          selectedModelId
+            ? `Pinned execution to complex default model ${selectedModelId}.`
+            : 'Pinned execution to configured complex default model.',
+          ...restrictionDetails,
+        ].join(' '),
       };
     case 'specific':
       return {
         summary: 'Manual override',
-        detail: `Pinned execution to specific model ${override.modelId}.`,
+        detail: [`Pinned execution to specific model ${override.modelId}.`, ...restrictionDetails].join(' '),
       };
   }
+}
+
+function describePolicyRestrictions(policyOverrides: TaskPolicyOverrides | undefined): string[] {
+  const details: string[] = [];
+
+  if (policyOverrides?.fallbackEnabled === false) {
+    details.push('Automatic fallback disabled by user policy.');
+  }
+
+  if (policyOverrides?.verificationUpgradeAllowed === false) {
+    details.push('Verification upgrade disabled by user policy.');
+  }
+
+  return details;
 }
 
 function ensureCatalogAvailable(catalog: ModelOverrideCatalog): void {

@@ -95,6 +95,10 @@ function findLatestTraceEvent(taskResponse: TaskResponse, stage: string): Pipeli
   return [...taskResponse.trace].reverse().find((event) => event.stage === stage);
 }
 
+function isVerificationUpgradeAllowed(taskResponse: TaskResponse): boolean {
+  return taskResponse.checkpoint.taskRequest.policyOverrides?.verificationUpgradeAllowed !== false;
+}
+
 export function hasVerificationFailure(taskResponse: TaskResponse): boolean {
   return taskResponse.verifierResult?.verdict === 'fail';
 }
@@ -113,10 +117,15 @@ export function buildVerificationInsight(taskResponse: TaskResponse, catalog: Mo
   }
 
   const upgradeTargetModelId = resolveUpgradeTargetModelId(taskResponse, catalog);
+  const upgradeAllowed = isVerificationUpgradeAllowed(taskResponse);
   const upgradeCostEvent = findLatestTraceEvent(taskResponse, 'verification.upgrade.cost');
   const declinedUpgradeEvent = findLatestTraceEvent(taskResponse, 'verification.upgrade.declined');
   const manualConfirmEvent = findLatestTraceEvent(taskResponse, 'verification.manual-confirm.accepted');
   const detailParts = [verifierResult.summary, `Suggested action: ${formatSuggestedActionLabel(verifierResult.suggestedAction)}.`];
+
+  if (verifierResult.suggestedAction === 'upgrade-model' && !upgradeAllowed) {
+    detailParts.push('Upgrade blocked by user policy for this task.');
+  }
 
   if (verifierResult.suggestedAction === 'upgrade-model' && !upgradeTargetModelId) {
     detailParts.push('Upgrade unavailable because current run already uses configured complex default model.');
@@ -149,7 +158,7 @@ export function buildVerificationInsight(taskResponse: TaskResponse, catalog: Mo
         detail: 'Accept verifier risk and keep current result without rerun.',
         tone: 'secondary',
       });
-    } else if (verifierResult.suggestedAction === 'upgrade-model' && upgradeTargetModelId) {
+    } else if (verifierResult.suggestedAction === 'upgrade-model' && upgradeTargetModelId && upgradeAllowed) {
       actions.push({
         actionId: 'upgrade-model',
         label: `Upgrade to ${upgradeTargetModelId}`,
@@ -167,7 +176,9 @@ export function buildVerificationInsight(taskResponse: TaskResponse, catalog: Mo
         actionId: 'manual-confirm',
         label: 'Keep current result',
         detail: verifierResult.suggestedAction === 'upgrade-model'
-          ? 'Upgrade unavailable. Keep current result or change model manually before rerun.'
+          ? upgradeAllowed
+            ? 'Upgrade unavailable. Keep current result or change model manually before rerun.'
+            : 'Upgrade disabled by user policy. Keep current result or change settings before rerun.'
           : 'Accept verifier risk and keep current result without rerun.',
         tone: 'primary',
       });
@@ -223,6 +234,10 @@ export function buildVerificationActionRerunRequest(
   }
 
   const upgradeTargetModelId = resolveUpgradeTargetModelId(taskResponse, catalog);
+  if (!isVerificationUpgradeAllowed(taskResponse)) {
+    throw new Error('Verification upgrade blocked by user policy for current task.');
+  }
+
   if (!upgradeTargetModelId) {
     throw new Error('Automatic model upgrade unavailable for current verifier result.');
   }

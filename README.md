@@ -22,6 +22,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Retriable provider failures now retry automatically with configurable fixed or exponential backoff, and each scheduled retry is recorded in trace metadata.
 - Preferred model can now fall back to configured backup model per simple or complex tier, with fallback reason visible in selected-model detail and session history tags.
 - Cache now stores schema, prompt, and template metadata, invalidates stale rows on TTL or version drift, and records stale reason before refreshing live output.
+- VS Code settings can now set per-user default model strategy and disable fallback or verifier-driven model upgrade for every new task, with invalid setting combinations blocked before submit.
 - Task panel now lets user keep automatic routing, pin simple or complex default model, or choose one specific configured model.
 - Task panel now keeps recent in-session run history so user can reopen old request summaries, trace, cache outcome, rerun markers, and override markers without losing current inputs.
 - See selected model, pipeline graph/state, execution path, token usage, latency, and estimated cost.
@@ -101,6 +102,15 @@ Routing and runtime:
 - `LLM_CRANE_ENABLE_PROVIDER_FALLBACK`: optional boolean to enable or disable automatic model fallback; default `true`
 - `LLM_CRANE_SIMPLE_FALLBACK_MODELS`: optional comma-separated fallback model list for simple-tier selection
 - `LLM_CRANE_COMPLEX_FALLBACK_MODELS`: optional comma-separated fallback model list for complex-tier selection
+
+VS Code user policy settings:
+
+- `llmCrane.defaultModelStrategy`: user default model strategy for new tasks; `auto`, `simple-default`, `complex-default`, or `specific`
+- `llmCrane.defaultSpecificModelId`: configured model id used when default strategy is `specific`
+- `llmCrane.allowAutomaticFallback`: disables executor fallback per request when set to `false`
+- `llmCrane.allowVerificationUpgrade`: disables verifier-driven upgrade suggestion and rerun action for new tasks when set to `false`
+
+If `llmCrane.defaultModelStrategy` is `specific`, `llmCrane.defaultSpecificModelId` must be one of currently configured models. Invalid combinations are blocked before task submission with explicit error text.
 
 Retriable provider categories currently include `rate_limit`, `timeout`, `network`, and `upstream`. Non-retriable errors such as `auth`, `invalid_request`, or `unsupported_model` fail fast and return unified provider diagnostics.
 
@@ -238,6 +248,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Manual model override now records `policy.override` trace entries and updates selected-provider reasoning in result summaries
 - Executor now retries retriable provider failures with configured backoff, records `executor.retry` attempt metadata in trace, and returns unified provider failure once retry budget is exhausted
 - Executor can now switch to configured fallback model after eligible provider failure, records `executor.fallback` trace metadata, and prices final response against model that actually completed
+- Request policy overrides can now disable executor fallback or verifier upgrade per task, and `policy.override` trace metadata records these user policy decisions alongside model override mode
 - Pipeline returns unified `taskResult` payload even when executor stage fails
 - `taskResult.pipeline` carries serializable stage states, stage contracts, and state transitions for simple and complex graphs
 - `taskResult.plannerResult` carries ordered steps, decision points, open questions, and downstream hints for complex tasks

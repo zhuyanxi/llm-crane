@@ -17,7 +17,38 @@
         "command": "llmCrane.runTask",
         "title": "LLM Crane: Run Task"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "LLM Crane",
+      "properties": {
+        "llmCrane.defaultModelStrategy": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "simple-default",
+            "complex-default",
+            "specific"
+          ],
+          "default": "auto",
+          "markdownDescription": "Default model strategy for new tasks when panel stays on user default mode. `specific` requires `llmCrane.defaultSpecificModelId`."
+        },
+        "llmCrane.defaultSpecificModelId": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Configured model id used when `llmCrane.defaultModelStrategy` is `specific`. Unknown or unconfigured model blocks submission with clear error."
+        },
+        "llmCrane.allowAutomaticFallback": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Allow executor to switch to configured fallback model when preferred model fails with eligible provider error."
+        },
+        "llmCrane.allowVerificationUpgrade": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Allow verifier-driven model upgrade suggestion and rerun action for new tasks. When disabled, upgrade suggestions are downgraded to manual confirmation."
+        }
+      }
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
