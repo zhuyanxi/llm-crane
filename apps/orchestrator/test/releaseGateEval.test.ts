@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { runReleaseGate, type ReleaseGateReport } from '../evals/releaseGate';
+import { runReleaseGate, runCostQualityReport, type ReleaseGateReport, type CostQualityReport } from '../evals/releaseGate';
 
 describe('release gate', () => {
   let gateReport: ReleaseGateReport;
@@ -39,5 +39,48 @@ describe('release gate', () => {
         expect(f).toHaveProperty('actual');
       }
     }
+  });
+});
+
+describe('cost-quality report', () => {
+  let cqReport: CostQualityReport;
+
+  beforeAll(async () => {
+    cqReport = await runCostQualityReport();
+  });
+
+  it('includes cost metrics: simple route ratio and savings estimate', () => {
+    expect(cqReport.rulesV2.simpleRouteRatio).toBeGreaterThan(0);
+    expect(cqReport.rulesV2.simpleRouteRatio).toBeLessThanOrEqual(1);
+    expect(cqReport.costSavingsEstimate).toContain('tasks routed simple');
+  });
+
+  it('includes quality metrics: avg confidence and score dimensions', () => {
+    expect(cqReport.rulesV2.avgConfidence).toBeGreaterThan(0);
+    expect(cqReport.rulesV2.avgComplexityScore).toBeGreaterThan(0);
+    expect(cqReport.rulesV2.avgRiskScore).toBeGreaterThanOrEqual(0);
+    expect(cqReport.rulesV2.avgBudgetPressureScore).toBeGreaterThanOrEqual(0);
+  });
+
+  it('includes prompt version metadata for traceability', () => {
+    expect(cqReport.promptVersions).toHaveProperty('structurizer');
+    expect(cqReport.promptVersions).toHaveProperty('router');
+    expect(cqReport.promptVersions).toHaveProperty('planner');
+    expect(cqReport.promptVersions).toHaveProperty('verifier');
+    expect(cqReport.promptVersions).toHaveProperty('executor');
+  });
+
+  it('gate status reflects release readiness', () => {
+    expect(cqReport.gatePassed).toBe(true);
+    expect(cqReport.releaseRecommendation).toContain('Release recommended');
+  });
+
+  it('generates printable markdown-format summary', () => {
+    expect(cqReport.summary).toContain('Cost-Quality Report');
+    expect(cqReport.summary).toContain('Prompt Versions:');
+    expect(cqReport.summary).toContain('Rules-V2 Strategy:');
+    expect(cqReport.summary).toContain('Simple route ratio');
+    expect(cqReport.summary).toContain('Cost savings');
+    expect(cqReport.summary).toContain('Gate:');
   });
 });
