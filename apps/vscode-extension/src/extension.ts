@@ -95,12 +95,18 @@ type SelectHistoryEntryPanelInboundMessage = {
   historyId: string;
 };
 
+type RequestAnalyticsPanelInboundMessage = {
+  type: 'requestAnalytics';
+  days: number;
+};
+
 type TaskPanelInboundMessage =
   | SubmitTaskPanelInboundMessage
   | PreviewContextPanelInboundMessage
   | RerunTaskPanelInboundMessage
   | VerificationActionPanelInboundMessage
-  | SelectHistoryEntryPanelInboundMessage;
+  | SelectHistoryEntryPanelInboundMessage
+  | RequestAnalyticsPanelInboundMessage;
 
 type TaskPanelStatus = 'idle' | 'running' | 'success' | 'error';
 
@@ -528,6 +534,26 @@ async function handleTaskPanelMessage(
     return;
   }
 
+  if (isRequestAnalyticsPanelInboundMessage(message)) {
+    try {
+      if (!orchestratorManager) {
+        return;
+      }
+      const result = await processManager.analyticsQuery(message.days);
+      void webview.postMessage({
+        type: 'analyticsResult',
+        dashboard: result.dashboard,
+        daily: result.daily,
+      });
+    } catch (error) {
+      void webview.postMessage({
+        type: 'analyticsResult',
+        error: error instanceof Error ? error.message : 'Analytics unavailable.',
+      });
+    }
+    return;
+  }
+
   if (!isRerunTaskPanelInboundMessage(message)) {
     return;
   }
@@ -691,6 +717,15 @@ function isSelectHistoryEntryPanelInboundMessage(message: unknown): message is S
 
   const candidate = message as Partial<SelectHistoryEntryPanelInboundMessage>;
   return candidate.type === 'selectHistoryEntry' && typeof candidate.historyId === 'string' && candidate.historyId.length > 0;
+}
+
+function isRequestAnalyticsPanelInboundMessage(message: unknown): message is RequestAnalyticsPanelInboundMessage {
+  if (typeof message !== 'object' || message === null) {
+    return false;
+  }
+
+  const candidate = message as Partial<RequestAnalyticsPanelInboundMessage>;
+  return candidate.type === 'requestAnalytics' && typeof candidate.days === 'number' && candidate.days > 0;
 }
 
 function isRerunnableStageId(value: string): value is RerunnableStageId {
@@ -2129,6 +2164,49 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <div class="history-list" id="history-list"></div>
       </section>
 
+      <section class="result-panel" id="analytics-panel" hidden>
+        <div class="history-panel-header">
+          <h2>Analytics Dashboard</h2>
+          <div class="action-buttons">
+            <button id="analytics-7d" type="button" class="secondary-button">7 days</button>
+            <button id="analytics-30d" type="button" class="secondary-button">30 days</button>
+          </div>
+        </div>
+        <div class="result-grid">
+          <div class="meta-card">
+            <span class="preview-label">Total requests</span>
+            <p class="meta-value" id="analytics-total-requests">—</p>
+            <p class="hint" id="analytics-total-requests-detail"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Avg cost</span>
+            <p class="meta-value" id="analytics-avg-cost">—</p>
+            <p class="hint">USD per request</p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Cache hit rate</span>
+            <p class="meta-value" id="analytics-cache-hit-rate">—</p>
+            <p class="hint" id="analytics-cache-hit-detail"></p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Complex route ratio</span>
+            <p class="meta-value" id="analytics-complex-ratio">—</p>
+            <p class="hint">L3 (planner+reasoner+verifier) calls</p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Total cost</span>
+            <p class="meta-value" id="analytics-total-cost">—</p>
+            <p class="hint">USD</p>
+          </div>
+          <div class="meta-card">
+            <span class="preview-label">Avg latency</span>
+            <p class="meta-value" id="analytics-avg-latency">—</p>
+            <p class="hint">ms</p>
+          </div>
+        </div>
+        <div class="hint" id="analytics-empty-state">Loading analytics...</div>
+      </section>
+
       <section class="result-panel" id="result-panel" hidden>
         <div class="result-header">
           <h2>Latest result</h2>
@@ -2293,6 +2371,18 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const historyPanel = document.getElementById('history-panel');
       const historyPanelHint = document.getElementById('history-panel-hint');
       const historyList = document.getElementById('history-list');
+      const analyticsPanel = document.getElementById('analytics-panel');
+      const analyticsTotalRequests = document.getElementById('analytics-total-requests');
+      const analyticsTotalRequestsDetail = document.getElementById('analytics-total-requests-detail');
+      const analyticsAvgCost = document.getElementById('analytics-avg-cost');
+      const analyticsCacheHitRate = document.getElementById('analytics-cache-hit-rate');
+      const analyticsCacheHitDetail = document.getElementById('analytics-cache-hit-detail');
+      const analyticsComplexRatio = document.getElementById('analytics-complex-ratio');
+      const analyticsTotalCost = document.getElementById('analytics-total-cost');
+      const analyticsAvgLatency = document.getElementById('analytics-avg-latency');
+      const analyticsEmptyState = document.getElementById('analytics-empty-state');
+      const analytics7dButton = document.getElementById('analytics-7d');
+      const analytics30dButton = document.getElementById('analytics-30d');
       const resultPanel = document.getElementById('result-panel');
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
@@ -2952,10 +3042,53 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         }
       });
 
+      function renderAnalytics(message) {
+        analyticsPanel.hidden = false;
+
+        if (message.error) {
+          analyticsEmptyState.textContent = 'Analytics unavailable: ' + message.error;
+          analyticsEmptyState.hidden = false;
+          return;
+        }
+
+        const d = message.dashboard;
+        analyticsEmptyState.hidden = d.totalRequests > 0;
+
+        if (d.totalRequests === 0) {
+          analyticsTotalRequests.textContent = 'No data';
+          analyticsTotalRequestsDetail.textContent = 'Run tasks to populate analytics over ' + d.days + ' days.';
+          analyticsAvgCost.textContent = '—';
+          analyticsCacheHitRate.textContent = '—';
+          analyticsComplexRatio.textContent = '—';
+          analyticsTotalCost.textContent = '—';
+          analyticsAvgLatency.textContent = '—';
+          return;
+        }
+
+        analyticsTotalRequests.textContent = d.totalRequests;
+        analyticsTotalRequestsDetail.textContent = d.simpleRouteCount + ' simple · ' + d.complexRouteCount + ' complex';
+        analyticsAvgCost.textContent = '$' + d.avgCostUsd.toFixed(4);
+        analyticsCacheHitRate.textContent = (d.cacheHitRate * 100).toFixed(0) + '%';
+        analyticsCacheHitDetail.textContent = 'Cache hit rate over period';
+        analyticsComplexRatio.textContent = (d.complexRouteRatio * 100).toFixed(0) + '%';
+        analyticsTotalCost.textContent = '$' + d.totalCostUsd.toFixed(4);
+        analyticsAvgLatency.textContent = d.avgLatencyMs + ' ms';
+      }
+
+      function requestAnalytics(days) {
+        analyticsEmptyState.textContent = 'Loading analytics...';
+        analyticsEmptyState.hidden = false;
+        vscode.postMessage({ type: 'requestAnalytics', days });
+      }
+
+      analytics7dButton.addEventListener('click', () => requestAnalytics(7));
+      analytics30dButton.addEventListener('click', () => requestAnalytics(30));
+
       renderTemplateFields();
       syncContextControls(true);
       syncModelOverrideControls();
       requestContextPreview();
+      requestAnalytics(7);
 
       window.addEventListener('message', (event) => {
         const message = event.data;
@@ -2974,6 +3107,10 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
 
         if (message?.type === 'contextPreview') {
           renderContextPreview(message);
+        }
+
+        if (message?.type === 'analyticsResult') {
+          renderAnalytics(message);
         }
       });
     </script>

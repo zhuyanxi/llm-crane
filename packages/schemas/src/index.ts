@@ -912,6 +912,11 @@ export const OrchestratorRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('rerunTask'),
     rerun: RerunTaskRequestSchema,
   }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('analyticsQuery'),
+    days: z.number().int().min(1).max(365).default(7),
+  }),
 ]);
 
 export const OrchestratorEventSchema = z.discriminatedUnion('type', [
@@ -936,6 +941,29 @@ export const OrchestratorEventSchema = z.discriminatedUnion('type', [
     id: z.string().min(1).optional(),
     message: z.string().min(1),
     diagnostic: DiagnosticSchema.optional(),
+  }),
+  z.object({
+    id: z.string().min(1),
+    type: z.literal('analyticsResult'),
+    dashboard: z.object({
+      totalRequests: z.number().int().nonnegative(),
+      avgCostUsd: z.number().nonnegative(),
+      cacheHitRate: z.number().min(0).max(1),
+      complexRouteRatio: z.number().min(0).max(1),
+      verifierPassRate: z.number().min(0).max(1).optional(),
+      simpleRouteCount: z.number().int().nonnegative(),
+      complexRouteCount: z.number().int().nonnegative(),
+      totalCostUsd: z.number().nonnegative(),
+      avgLatencyMs: z.number().nonnegative(),
+      days: z.number().int().positive(),
+    }),
+    daily: z.array(z.object({
+      period: z.string(),
+      requests: z.number().int().nonnegative(),
+      simpleCount: z.number().int().nonnegative(),
+      complexCount: z.number().int().nonnegative(),
+      costUsd: z.number().nonnegative(),
+    })).default([]),
   }),
 ]);
 

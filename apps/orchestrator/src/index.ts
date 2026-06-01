@@ -82,6 +82,52 @@ async function handleRequest(
         });
       }
       return;
+    case 'analyticsQuery':
+      try {
+        const dayResult = metricsStore.aggregate('day', request.days);
+        const totalRequests = dayResult.rows.reduce((sum, r) => sum + r.totalRequests, 0);
+        const totalSimple = dayResult.rows.reduce((sum, r) => sum + r.simpleRouteCount, 0);
+        const totalComplex = dayResult.rows.reduce((sum, r) => sum + r.complexRouteCount, 0);
+        const totalCost = dayResult.rows.reduce((sum, r) => sum + r.totalCostUsd, 0);
+        const totalCacheHits = dayResult.rows.reduce((sum, r) => sum + r.cacheHitCount, 0);
+        const totalCacheAll = dayResult.rows.reduce((sum, r) => sum + r.cacheHitCount + r.cacheMissCount + r.cacheBypassCount, 0);
+        const totalVerifierPass = dayResult.rows.reduce((sum, r) => sum + r.verifierPassCount, 0);
+        const totalVerifierAll = dayResult.rows.reduce((sum, r) => sum + r.verifierPassCount + r.verifierFailCount + r.verifierWarningCount, 0);
+        const avgLatency = dayResult.rows.reduce((sum, r) => sum + r.avgLatencyMs, 0) / Math.max(1, dayResult.rows.length);
+
+        writeProtocolEvent({
+          id: request.id,
+          type: 'analyticsResult',
+          dashboard: {
+            totalRequests,
+            avgCostUsd: totalRequests > 0 ? Math.round(totalCost / totalRequests * 10000) / 10000 : 0,
+            cacheHitRate: totalCacheAll > 0 ? Math.round(totalCacheHits / totalCacheAll * 100) / 100 : 0,
+            complexRouteRatio: totalRequests > 0 ? Math.round(totalComplex / totalRequests * 100) / 100 : 0,
+            verifierPassRate: totalVerifierAll > 0 ? Math.round(totalVerifierPass / totalVerifierAll * 100) / 100 : undefined,
+            simpleRouteCount: totalSimple,
+            complexRouteCount: totalComplex,
+            totalCostUsd: Math.round(totalCost * 10000) / 10000,
+            avgLatencyMs: Math.round(avgLatency),
+            days: request.days,
+          },
+          daily: dayResult.rows.map((r) => ({
+            period: r.period,
+            requests: r.totalRequests,
+            simpleCount: r.simpleRouteCount,
+            complexCount: r.complexRouteCount,
+            costUsd: Math.round(r.totalCostUsd * 10000) / 10000,
+          })),
+        });
+      } catch (error) {
+        writeProtocolError(request.id, error, {
+          category: 'internal',
+          code: 'internal.analytics_query_failed',
+          summary: 'Analytics query failed',
+          message: 'LLM Crane failed while querying analytics metrics.',
+          stage: 'orchestrator.analyticsQuery',
+        });
+      }
+      return;
     case 'rerunTask':
       try {
         writeProtocolEvent({

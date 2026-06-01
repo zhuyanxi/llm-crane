@@ -33,7 +33,7 @@ export type OrchestratorDispatchResult = {
 type CorrelatedOrchestratorEvent = Extract<OrchestratorEvent, { id: string }>;
 
 type PendingProtocolRequest = {
-  expectedType: 'healthResult' | 'taskResult';
+  expectedType: 'healthResult' | 'taskResult' | 'analyticsResult';
   resolve: (event: CorrelatedOrchestratorEvent) => void;
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout;
@@ -42,7 +42,8 @@ type PendingProtocolRequest = {
 type OutboundOrchestratorRequest =
   | Omit<Extract<OrchestratorRequest, { type: 'health' }>, 'id'>
   | Omit<Extract<OrchestratorRequest, { type: 'runTask' }>, 'id'>
-  | Omit<Extract<OrchestratorRequest, { type: 'rerunTask' }>, 'id'>;
+  | Omit<Extract<OrchestratorRequest, { type: 'rerunTask' }>, 'id'>
+  | Omit<Extract<OrchestratorRequest, { type: 'analyticsQuery' }>, 'id'>;
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
@@ -100,6 +101,16 @@ export class OrchestratorProcessManager {
       readyMode,
       processId: this.orchestratorProcess?.pid,
     };
+  }
+
+  async analyticsQuery(days: number): Promise<Extract<OrchestratorEvent, { type: 'analyticsResult' }>> {
+    const readyMode = await this.ensureReady();
+    const event = await this.sendRequest({ type: 'analyticsQuery', days }, 'analyticsResult', 5000);
+    if (event.type !== 'analyticsResult') {
+      throw new Error(`Expected analyticsResult, received ${event.type}.`);
+    }
+
+    return event;
   }
 
   async dispose(): Promise<void> {
