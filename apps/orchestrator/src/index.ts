@@ -95,6 +95,24 @@ async function handleRequest(
         const totalVerifierAll = dayResult.rows.reduce((sum, r) => sum + r.verifierPassCount + r.verifierFailCount + r.verifierWarningCount, 0);
         const avgLatency = dayResult.rows.reduce((sum, r) => sum + r.avgLatencyMs, 0) / Math.max(1, dayResult.rows.length);
 
+        // Savings vs all-complex baseline
+        const complexRows = dayResult.rows.filter((r) => r.complexRouteCount > 0);
+        const avgComplexCost = complexRows.length > 0
+          ? complexRows.reduce((sum, r) => sum + r.totalCostUsd, 0) / complexRows.reduce((sum, r) => sum + r.complexRouteCount, 0)
+          : 0.01; // estimated fallback
+        const baselineCostUsd = totalRequests * avgComplexCost;
+        const savingsUsd = Math.max(0, baselineCostUsd - totalCost);
+        const savingsRatio = baselineCostUsd > 0 ? Math.round(savingsUsd / baselineCostUsd * 100) / 100 : 0;
+        const savings = {
+          actualCostUsd: Math.round(totalCost * 10000) / 10000,
+          baselineCostUsd: Math.round(baselineCostUsd * 10000) / 10000,
+          savingsUsd: Math.round(savingsUsd * 10000) / 10000,
+          savingsRatio,
+          assumption: totalComplex > 0
+            ? `Baseline assumes all ${totalRequests} requests used complex model at avg complex cost $${avgComplexCost.toFixed(4)}. Actual mixed routing saved $${savingsUsd.toFixed(4)}.`
+            : `No complex route data available. Baseline estimated from typical complex model cost. Savings approximate.`,
+        };
+
         writeProtocolEvent({
           id: request.id,
           type: 'analyticsResult',
@@ -110,6 +128,7 @@ async function handleRequest(
             avgLatencyMs: Math.round(avgLatency),
             days: request.days,
           },
+          savings,
           daily: dayResult.rows.map((r) => ({
             period: r.period,
             requests: r.totalRequests,

@@ -2204,6 +2204,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             <p class="hint">ms</p>
           </div>
         </div>
+        <div class="meta-card" id="analytics-savings-card" hidden>
+          <span class="preview-label">Estimated savings vs all-complex</span>
+          <p class="meta-value" id="analytics-savings-ratio">—</p>
+          <p class="hint" id="analytics-savings-assumption"></p>
+        </div>
         <div class="hint" id="analytics-empty-state">Loading analytics...</div>
       </section>
 
@@ -2383,6 +2388,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const analyticsEmptyState = document.getElementById('analytics-empty-state');
       const analytics7dButton = document.getElementById('analytics-7d');
       const analytics30dButton = document.getElementById('analytics-30d');
+      const analyticsSavingsCard = document.getElementById('analytics-savings-card');
+      const analyticsSavingsRatio = document.getElementById('analytics-savings-ratio');
+      const analyticsSavingsAssumption = document.getElementById('analytics-savings-assumption');
       const resultPanel = document.getElementById('result-panel');
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
@@ -3073,6 +3081,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         analyticsComplexRatio.textContent = (d.complexRouteRatio * 100).toFixed(0) + '%';
         analyticsTotalCost.textContent = '$' + d.totalCostUsd.toFixed(4);
         analyticsAvgLatency.textContent = d.avgLatencyMs + ' ms';
+
+        if (message.savings) {
+          analyticsSavingsCard.hidden = false;
+          analyticsSavingsRatio.textContent = (message.savings.savingsRatio * 100).toFixed(0) + '% ($' + message.savings.savingsUsd.toFixed(4) + ')';
+          analyticsSavingsAssumption.textContent = message.savings.assumption;
+        } else {
+          analyticsSavingsCard.hidden = true;
+        }
       }
 
       function requestAnalytics(days) {

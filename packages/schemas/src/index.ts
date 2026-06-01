@@ -957,6 +957,13 @@ export const OrchestratorEventSchema = z.discriminatedUnion('type', [
       avgLatencyMs: z.number().nonnegative(),
       days: z.number().int().positive(),
     }),
+    savings: z.object({
+      actualCostUsd: z.number().nonnegative(),
+      baselineCostUsd: z.number().nonnegative(),
+      savingsUsd: z.number().nonnegative(),
+      savingsRatio: z.number().min(0).max(1),
+      assumption: z.string().min(1),
+    }).optional(),
     daily: z.array(z.object({
       period: z.string(),
       requests: z.number().int().nonnegative(),
