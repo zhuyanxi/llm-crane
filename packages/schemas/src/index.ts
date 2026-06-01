@@ -964,6 +964,14 @@ export const OrchestratorEventSchema = z.discriminatedUnion('type', [
       savingsRatio: z.number().min(0).max(1),
       assumption: z.string().min(1),
     }).optional(),
+    quality: z.object({
+      verifierPassRate: z.number().min(0).max(1).optional(),
+      suggestions: z.array(z.object({
+        signal: z.string().min(1),
+        value: z.string().min(1),
+        suggestion: z.string().min(1),
+      })).default([]),
+    }).optional(),
     daily: z.array(z.object({
       period: z.string(),
       requests: z.number().int().nonnegative(),

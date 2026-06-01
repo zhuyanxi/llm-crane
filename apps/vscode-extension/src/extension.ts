@@ -2209,6 +2209,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <p class="meta-value" id="analytics-savings-ratio">—</p>
           <p class="hint" id="analytics-savings-assumption"></p>
         </div>
+        <div class="meta-card" id="analytics-quality-card" hidden>
+          <span class="preview-label">Quality signals</span>
+          <p class="meta-value" id="analytics-verifier-pass">—</p>
+          <div class="trace-list" id="analytics-suggestions"></div>
+        </div>
         <div class="hint" id="analytics-empty-state">Loading analytics...</div>
       </section>
 
@@ -2391,6 +2396,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const analyticsSavingsCard = document.getElementById('analytics-savings-card');
       const analyticsSavingsRatio = document.getElementById('analytics-savings-ratio');
       const analyticsSavingsAssumption = document.getElementById('analytics-savings-assumption');
+      const analyticsQualityCard = document.getElementById('analytics-quality-card');
+      const analyticsVerifierPass = document.getElementById('analytics-verifier-pass');
+      const analyticsSuggestions = document.getElementById('analytics-suggestions');
       const resultPanel = document.getElementById('result-panel');
       const resultModelChip = document.getElementById('result-model-chip');
       const resultOutput = document.getElementById('result-output');
@@ -3088,6 +3096,22 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           analyticsSavingsAssumption.textContent = message.savings.assumption;
         } else {
           analyticsSavingsCard.hidden = true;
+        }
+
+        if (message.quality) {
+          analyticsQualityCard.hidden = false;
+          analyticsVerifierPass.textContent = message.quality.verifierPassRate !== undefined
+            ? 'Verifier pass rate: ' + (message.quality.verifierPassRate * 100).toFixed(0) + '%'
+            : 'No verifier data';
+          analyticsSuggestions.replaceChildren(
+            ...message.quality.suggestions.map((s) => {
+              const li = document.createElement('li');
+              li.textContent = s.suggestion;
+              return li;
+            }),
+          );
+        } else {
+          analyticsQualityCard.hidden = true;
         }
       }
 

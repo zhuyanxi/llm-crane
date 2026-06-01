@@ -113,6 +113,29 @@ async function handleRequest(
             : `No complex route data available. Baseline estimated from typical complex model cost. Savings approximate.`,
         };
 
+        // Quality signals + suggestions
+        const verifierPassRate = totalVerifierAll > 0 ? Math.round(totalVerifierPass / totalVerifierAll * 100) / 100 : undefined;
+        const cacheHitRate = totalCacheAll > 0 ? Math.round(totalCacheHits / totalCacheAll * 100) / 100 : 0;
+        const complexRouteRatio = totalRequests > 0 ? Math.round(totalComplex / totalRequests * 100) / 100 : 0;
+        const suggestions: Array<{ signal: string; value: string; suggestion: string }> = [];
+
+        if (verifierPassRate !== undefined && verifierPassRate < 0.8 && totalVerifierAll > 0) {
+          suggestions.push({ signal: 'verifier-pass-rate', value: `${(verifierPassRate * 100).toFixed(0)}%`, suggestion: 'Verifier pass rate below 80%. Consider adjusting quality bar or task constraints to improve output consistency.' });
+        }
+        if (totalRequests > 0 && complexRouteRatio < 0.3 && totalComplex > 0) {
+          suggestions.push({ signal: 'complex-route-ratio', value: `${(complexRouteRatio * 100).toFixed(0)}%`, suggestion: 'Low complex route usage. Consider raising quality bar or using best-quality budget preference for complex tasks.' });
+        }
+        if (totalCacheAll > 0 && cacheHitRate < 0.1) {
+          suggestions.push({ signal: 'cache-hit-rate', value: `${(cacheHitRate * 100).toFixed(0)}%`, suggestion: 'Cache hit rate is low. Repeated similar tasks may benefit from cache TTL increase or more consistent task descriptions.' });
+        }
+        if (totalRequests > 0 && complexRouteRatio > 0.8 && totalSimple > 0) {
+          suggestions.push({ signal: 'cost-efficiency', value: `${(complexRouteRatio * 100).toFixed(0)}% complex`, suggestion: 'High complex route ratio. Consider using save-cost budget preference or fast quality bar for non-critical tasks.' });
+        }
+        const quality = {
+          verifierPassRate: verifierPassRate === undefined ? undefined : Math.round(verifierPassRate * 100) / 100,
+          suggestions,
+        };
+
         writeProtocolEvent({
           id: request.id,
           type: 'analyticsResult',
@@ -129,6 +152,7 @@ async function handleRequest(
             days: request.days,
           },
           savings,
+          quality,
           daily: dayResult.rows.map((r) => ({
             period: r.period,
             requests: r.totalRequests,
