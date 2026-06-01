@@ -248,4 +248,27 @@ describe('routeTaskWithAssistant', () => {
     expect(decision.assistantResult?.suggestedRoute).toBe('complex');
     expect(decision.confidence).toBeGreaterThanOrEqual(0.7);
   });
+
+  it('adjusts routing threshold and reports conflict for save-cost budget preference', async () => {
+    const result = structurizeTaskRequest(
+      makeTaskRequest('Analyze architecture risk across entire workspace.', {
+        qualityBar: 'high',
+        contexts: [
+          {
+            source: 'workspace',
+            uri: '/workspace',
+            content: 'workspace snapshot',
+          },
+        ],
+      }),
+    );
+
+    const saveCostDecision = routeTask(result, undefined, 'save-cost');
+    const bestQualityDecision = routeTask(result, undefined, 'best-quality');
+
+    expect(saveCostDecision.budgetPressureScore).toBeGreaterThanOrEqual(bestQualityDecision.budgetPressureScore);
+    expect(saveCostDecision.scoringConfig?.complexThreshold).toBeGreaterThan(bestQualityDecision.scoringConfig?.complexThreshold ?? 0);
+    expect(saveCostDecision.budgetConflict).toContain('save-cost');
+    expect(bestQualityDecision.budgetConflict).toBeUndefined();
+  });
 });

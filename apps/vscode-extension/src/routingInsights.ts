@@ -39,6 +39,9 @@ export function buildRoutingInsight(
   if (taskResponse.routeDecision.fallbackReason) {
     reasonParts.push(`Fallback: ${taskResponse.routeDecision.fallbackReason}`);
   }
+  if (taskResponse.routeDecision.budgetConflict) {
+    reasonParts.push(`Budget: ${taskResponse.routeDecision.budgetConflict}`);
+  }
 
   const { earlyExitSummary, earlyExitDetail } = buildEarlyExitInsight(taskResponse);
 

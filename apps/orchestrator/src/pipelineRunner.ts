@@ -661,6 +661,8 @@ export async function runTaskPipeline(
         providerRegistry,
         config.defaultSimpleModel,
         structurizerResult,
+        undefined,
+        taskRequest.policyOverrides?.budgetPreference,
       );
       pipelineMachine.updateContext({
         routeDecision,
@@ -690,6 +692,7 @@ export async function runTaskPipeline(
             assistantStatus: routeDecision.assistantResult?.status,
             assistantModelId: routeDecision.assistantResult?.modelId,
             assistantLatencyMs: routeDecision.assistantResult?.latencyMs,
+            budgetConflict: routeDecision.budgetConflict,
           }),
           error: routeDecision.fallbackReason
             ? {

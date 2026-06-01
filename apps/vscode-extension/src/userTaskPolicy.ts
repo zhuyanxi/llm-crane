@@ -9,6 +9,7 @@ export const DEFAULT_USER_TASK_POLICY_SETTINGS: UserTaskPolicySettings = {
   defaultModelStrategy: 'auto',
   allowAutomaticFallback: true,
   allowVerificationUpgrade: true,
+  budgetPreference: 'balanced',
 };
 
 export type UserTaskPolicySettingsSource = {
@@ -16,6 +17,7 @@ export type UserTaskPolicySettingsSource = {
   defaultSpecificModelId?: unknown;
   allowAutomaticFallback?: unknown;
   allowVerificationUpgrade?: unknown;
+  budgetPreference?: unknown;
 };
 
 export function parseUserTaskPolicySettings(
@@ -29,6 +31,7 @@ export function parseUserTaskPolicySettings(
         typeof source.defaultSpecificModelId === 'string' ? source.defaultSpecificModelId.trim() || undefined : source.defaultSpecificModelId,
       allowAutomaticFallback: source.allowAutomaticFallback ?? DEFAULT_USER_TASK_POLICY_SETTINGS.allowAutomaticFallback,
       allowVerificationUpgrade: source.allowVerificationUpgrade ?? DEFAULT_USER_TASK_POLICY_SETTINGS.allowVerificationUpgrade,
+      budgetPreference: source.budgetPreference ?? DEFAULT_USER_TASK_POLICY_SETTINGS.budgetPreference,
     });
 
     if (parsed.defaultModelStrategy !== 'specific') {
@@ -72,6 +75,7 @@ export function resolveUserTaskPolicyOverrides(
     ...modelOverridePolicy,
     fallbackEnabled: settings.allowAutomaticFallback,
     verificationUpgradeAllowed: settings.allowVerificationUpgrade,
+    budgetPreference: settings.budgetPreference,
   };
 
   if (
@@ -94,7 +98,14 @@ export function describeUserTaskPolicySettings(settings: UserTaskPolicySettings)
         ? 'Complex default model'
         : 'Automatic routing';
 
+  const budgetPreferenceLabel = settings.budgetPreference === 'save-cost'
+    ? 'save cost'
+    : settings.budgetPreference === 'best-quality'
+      ? 'best quality'
+      : 'balanced budget';
+
   const restrictionParts = [
+    `budget preference: ${budgetPreferenceLabel}`,
     settings.allowAutomaticFallback ? 'fallback enabled' : 'fallback disabled',
     settings.allowVerificationUpgrade ? 'verification upgrade enabled' : 'verification upgrade disabled',
   ];

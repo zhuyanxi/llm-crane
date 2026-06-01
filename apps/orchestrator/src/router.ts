@@ -20,6 +20,49 @@ const ROUTER_ASSISTANT_MAX_OUTPUT_TOKENS = 600;
 const ROUTER_ASSISTANT_TIMEOUT_MS = 8_000;
 const ROUTER_ASSISTANT_HYBRID_WEIGHT = 0.35;
 
+type BudgetPreference = 'save-cost' | 'balanced' | 'best-quality';
+
+const BUDGET_SCORING_OVERRIDES: Record<BudgetPreference, Pick<RouteScoringConfig, 'budgetPressureWeight' | 'complexThreshold'>> = {
+  'save-cost': { budgetPressureWeight: 0.35, complexThreshold: 6 },
+  balanced: { budgetPressureWeight: 0.15, complexThreshold: 4 },
+  'best-quality': { budgetPressureWeight: 0.05, complexThreshold: 2 },
+};
+
+function resolveBudgetAwareScoringConfig(
+  config: RouteScoringConfig,
+  budgetPreference?: BudgetPreference,
+): RouteScoringConfig {
+  if (!budgetPreference || budgetPreference === 'balanced') {
+    return config;
+  }
+
+  const overrides = BUDGET_SCORING_OVERRIDES[budgetPreference];
+
+  return resolveRouteScoringConfig({
+    ...config,
+    ...overrides,
+  });
+}
+
+function detectBudgetConflict(
+  result: StructurizerResult,
+  budgetPreference?: BudgetPreference,
+): string | undefined {
+  if (budgetPreference !== 'save-cost') {
+    return undefined;
+  }
+
+  if (result.structuredTask.qualityBar === 'high') {
+    return 'Budget preference "save-cost" conflicts with "high" quality bar. Task will stay on cheaper route but may produce weaker results.';
+  }
+
+  if (result.structuredTask.target.kind === 'workspace') {
+    return 'Budget preference "save-cost" may skip workspace-wide analysis needed for accurate result.';
+  }
+
+  return undefined;
+}
+
 function unique(items: string[]): string[] {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
 }
@@ -250,8 +293,9 @@ function buildRouteReason(route: RouteTier, factors: RouteScoreFactor[], composi
   return `${unique(topFactors.map((factor) => factor.detail)).join(' ')} Composite score ${compositeScore} meets threshold ${config.complexThreshold}.`;
 }
 
-function inferRouteDecision(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>): unknown {
-  const config = resolveRouteScoringConfig(scoringConfig);
+function inferRouteDecision(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>, budgetPreference?: BudgetPreference): unknown {
+  const baseConfig = resolveRouteScoringConfig(scoringConfig);
+  const config = resolveBudgetAwareScoringConfig(baseConfig, budgetPreference);
   const scoreBreakdown = [
     ...buildComplexityFactors(result),
     ...buildRiskFactors(result),
@@ -263,6 +307,7 @@ function inferRouteDecision(result: StructurizerResult, scoringConfig?: Partial<
   const compositeScore = buildCompositeScore(complexityScore, riskScore, budgetPressureScore, config);
   const route: RouteTier = compositeScore >= config.complexThreshold ? 'complex' : 'simple';
   const confidence = buildConfidence(route, compositeScore, config);
+  const budgetConflict = detectBudgetConflict(result, budgetPreference);
 
   return {
     status: 'routed',
@@ -276,6 +321,7 @@ function inferRouteDecision(result: StructurizerResult, scoringConfig?: Partial<
     scoreBreakdown,
     scoringConfig: config,
     strategy: 'rules-v2',
+    budgetConflict,
   };
 }
 
@@ -329,8 +375,8 @@ export function parseRouteDecision(candidate: unknown): RouteDecision {
   }
 }
 
-export function routeTask(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>): RouteDecision {
-  return parseRouteDecision(inferRouteDecision(result, scoringConfig));
+export function routeTask(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>, budgetPreference?: BudgetPreference): RouteDecision {
+  return parseRouteDecision(inferRouteDecision(result, scoringConfig, budgetPreference));
 }
 
 type RouterAssistantProviderInvoker = {
@@ -513,8 +559,9 @@ export async function routeTaskWithAssistant(
   modelId: string | undefined,
   result: StructurizerResult,
   scoringConfig?: Partial<RouteScoringConfig>,
+  budgetPreference?: BudgetPreference,
 ): Promise<RouteDecision> {
-  const rulesDecision = routeTask(result, scoringConfig);
+  const rulesDecision = routeTask(result, scoringConfig, budgetPreference);
 
   if (!providerInvoker || !modelId) {
     return rulesDecision;

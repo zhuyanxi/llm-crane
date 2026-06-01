@@ -304,6 +304,7 @@ export const TaskPolicyOverridesSchema = z.object({
   modelOverride: TaskModelOverrideSchema.optional(),
   fallbackEnabled: z.boolean().optional(),
   verificationUpgradeAllowed: z.boolean().optional(),
+  budgetPreference: z.enum(['save-cost', 'balanced', 'best-quality']).optional(),
 });
 
 export const UserTaskPolicySettingsSchema = z.object({
@@ -311,6 +312,7 @@ export const UserTaskPolicySettingsSchema = z.object({
   defaultSpecificModelId: z.string().min(1).optional(),
   allowAutomaticFallback: z.boolean().default(true),
   allowVerificationUpgrade: z.boolean().default(true),
+  budgetPreference: z.enum(['save-cost', 'balanced', 'best-quality']).default('balanced'),
 });
 
 export const StructuredTaskTemplateSchema = z.object({
@@ -529,6 +531,7 @@ export const RouteDecisionSchema = z.object({
   strategy: RouteStrategySchema.default('rules-v1'),
   fallbackReason: z.string().min(1).optional(),
   assistantResult: RouteAssistantResultSchema.optional(),
+  budgetConflict: z.string().min(1).optional(),
 });
 
 export const PlannerResultStatusSchema = z.enum(['planned', 'fallback']);

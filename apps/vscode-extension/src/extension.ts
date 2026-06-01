@@ -65,6 +65,7 @@ type SubmitTaskPanelInboundMessage = {
   userNotes?: string;
   modelOverrideMode: ModelOverrideMode;
   overrideModelId: string;
+  budgetPreference?: string;
 };
 
 type PreviewContextPanelInboundMessage = {
@@ -333,6 +334,7 @@ async function handleTaskPanelMessage(
         message.userNotes ?? '',
         message.modelOverrideMode,
         message.overrideModelId,
+        message.budgetPreference,
       );
       const { response, readyMode, processId } = await processManager.runTask(taskRequest);
       const status: TaskPanelStatus = hasTaskFailureState(response) ? 'error' : 'success';
@@ -630,6 +632,7 @@ function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTas
     (candidate.userNotes === undefined || typeof candidate.userNotes === 'string') &&
     typeof candidate.modelOverrideMode === 'string' &&
     typeof candidate.overrideModelId === 'string' &&
+    (candidate.budgetPreference === undefined || typeof candidate.budgetPreference === 'string') &&
     isModelOverrideMode(candidate.modelOverrideMode) &&
     isContextCaptureMode(candidate.contextMode)
   );
@@ -896,6 +899,7 @@ function buildTaskRequest(
   userNotes: string,
   modelOverrideMode: ModelOverrideMode,
   overrideModelId: string,
+  budgetPreference?: string,
 ): TaskRequest {
   const normalizedTask = task.trim();
   const normalizedTemplateValues = normalizeTemplateValues(templateValues);
@@ -908,6 +912,15 @@ function buildTaskRequest(
     modelOverrideCatalog,
     userTaskPolicySettings,
   );
+
+  let resolvedPolicyOverrides = policyOverrides;
+
+  if (budgetPreference) {
+    resolvedPolicyOverrides = {
+      ...(policyOverrides ?? {}),
+      budgetPreference: budgetPreference as 'save-cost' | 'balanced' | 'best-quality',
+    };
+  }
 
   if (templateDefinition) {
     validateTemplateInputs(templateDefinition, normalizedTemplateValues);
@@ -945,7 +958,7 @@ function buildTaskRequest(
     constraints: templateDefinition?.defaultConstraints ?? [],
     cacheMode: ignoreCache ? 'bypass' : 'default',
     contexts: plan.contexts,
-    policyOverrides,
+    policyOverrides: resolvedPolicyOverrides,
   });
 }
 
@@ -957,6 +970,7 @@ function readUserTaskPolicySettingsSource() {
     defaultSpecificModelId: configuration.get('defaultSpecificModelId'),
     allowAutomaticFallback: configuration.get('allowAutomaticFallback'),
     allowVerificationUpgrade: configuration.get('allowVerificationUpgrade'),
+    budgetPreference: configuration.get('budgetPreference'),
   };
 }
 
@@ -2026,6 +2040,16 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
             : 'No configured models available for specific override.'}</span>
         </div>
 
+        <div class="field-group">
+          <label for="budget-preference">Budget preference</label>
+          <select id="budget-preference">
+            <option value="save-cost">Save cost (higher complex threshold)</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="best-quality">Best quality (lower complex threshold)</option>
+          </select>
+          <span class="hint" id="budget-preference-hint">Adjusts routing budget pressure and complex threshold. Cost-saving mode may conflict with high quality bar.</span>
+        </div>
+
         <div class="field-group" id="template-fields-block" hidden>
           <label>Template inputs</label>
           <div class="template-fields" id="template-fields"></div>
@@ -2242,6 +2266,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const specificModelBlock = document.getElementById('specific-model-block');
       const specificModelInput = document.getElementById('specific-model');
       const specificModelHint = document.getElementById('specific-model-hint');
+      const budgetPreferenceInput = document.getElementById('budget-preference');
+      const budgetPreferenceHint = document.getElementById('budget-preference-hint');
       const templateFieldsBlock = document.getElementById('template-fields-block');
       const templateFields = document.getElementById('template-fields');
       const terminalOutputInput = document.getElementById('terminal-output-input');
@@ -2863,6 +2889,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         const userNotes = userNotesInput.value;
         const modelOverrideMode = modelOverrideModeInput.value;
         const overrideModelId = specificModelInput.value;
+        const budgetPreference = budgetPreferenceInput.value;
         const submittedTask = value.trim() || (templateId === customTaskTemplateId ? '' : templateSelect.options[templateSelect.selectedIndex].textContent + ' template');
         setStatus('running', 'Submitting task', 'Sending task and requested context mode to extension host.', submittedTask, '', '');
         vscode.postMessage({
@@ -2878,6 +2905,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           userNotes,
           modelOverrideMode,
           overrideModelId,
+          budgetPreference,
         });
       }
 

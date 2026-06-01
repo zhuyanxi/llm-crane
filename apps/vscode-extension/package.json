@@ -46,6 +46,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Allow verifier-driven model upgrade suggestion and rerun action for new tasks. When disabled, upgrade suggestions are downgraded to manual confirmation."
+        },
+        "llmCrane.budgetPreference": {
+          "type": "string",
+          "enum": [
+            "save-cost",
+            "balanced",
+            "best-quality"
+          ],
+          "default": "balanced",
+          "markdownDescription": "Routing budget preference. `save-cost` raises complex threshold, `best-quality` lowers it. Conflict warnings shown when budget clashes with quality bar."
         }
       }
     }
