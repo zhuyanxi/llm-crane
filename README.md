@@ -219,6 +219,7 @@ Common package-scoped examples:
 ```bash
 corepack pnpm --filter @llm-crane/orchestrator test
 corepack pnpm --filter @llm-crane/orchestrator eval:routing
+corepack pnpm --filter @llm-crane/orchestrator eval:stages
 corepack pnpm --filter @llm-crane/vscode-extension build
 corepack pnpm --filter @llm-crane/vscode-extension eval:context-pruning
 corepack pnpm --filter @llm-crane/vscode-extension package:vsix
