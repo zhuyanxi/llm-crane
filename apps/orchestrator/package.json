@@ -7,6 +7,7 @@
     "dev": "tsc -w -p tsconfig.json",
     "eval:routing": "vitest run --config ../../vitest.config.ts test/routingEval.test.ts",
     "eval:stages": "vitest run --config ../../vitest.config.ts test/stageEval.test.ts",
+    "eval:gate": "vitest run --config ../../vitest.config.ts test/releaseGateEval.test.ts",
     "lint": "eslint src --max-warnings=0",
     "start": "node dist/index.js",
     "test": "vitest run --config ../../vitest.config.ts test",
