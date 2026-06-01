@@ -25,6 +25,7 @@ import {
   type TaskResponse,
   type VerificationResult,
 } from '@llm-crane/schemas';
+import { type AnalyticsMetricsStore } from './analyticsMetrics';
 import {
   createExecutorStageInput,
   createExecutorStageOutput,
@@ -487,6 +488,7 @@ export async function runTaskPipeline(
   taskRequest: TaskRequest,
   overrides: PipelineRunnerDependencies = {},
   runMode: PipelineRunMode = FULL_RUN_MODE,
+  metricsStore?: AnalyticsMetricsStore,
 ): Promise<TaskResponse> {
   const dependencies = {
     ...defaultDependencies,
@@ -1493,6 +1495,32 @@ export async function runTaskPipeline(
     trace: traceEntries,
     capturedAt: dependencies.createTimestamp(),
   });
+
+  // Record metrics (best-effort, never blocks pipeline)
+  if (metricsStore) {
+    try {
+      metricsStore.record({
+        timestamp: dependencies.createTimestamp(),
+        taskChars: taskRequest.task.length,
+        route: routeDecision.route,
+        cacheStatus: undefined,
+        providerId: providerResult.providerId,
+        modelId,
+        inputTokens: providerResult.usage?.inputTokens,
+        outputTokens: providerResult.usage?.outputTokens,
+        totalTokens: providerResult.usage?.totalTokens,
+        latencyMs: providerResult.latencyMs,
+        totalCostUsd: costEstimate.totalCostUsd,
+        costStatus: costEstimate.status,
+        verifierVerdict: verifierResult?.verdict ?? 'none',
+        strategy: routeDecision.strategy,
+        budgetPreference: taskRequest.policyOverrides?.budgetPreference,
+        promptVersion: summarizePromptVersions(),
+      });
+    } catch {
+      // Metrics write failure is silent
+    }
+  }
 
   return TaskResponseSchema.parse({
     output,

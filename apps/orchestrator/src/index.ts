@@ -18,6 +18,7 @@ import {
 import { runTaskWithCache } from './cachedTaskRunner';
 import { runTaskPipeline } from './pipelineRunner';
 import { resolveTaskCachePath, SQLiteTaskCache, type TaskCacheStore } from './taskCache';
+import { SQLiteAnalyticsMetricsStore, type AnalyticsMetricsStore } from './analyticsMetrics';
 
 function logOrchestrator(message: string): void {
   console.error(`[llm-crane] ${message}`);
@@ -48,6 +49,7 @@ async function handleRequest(
   config: RuntimeConfig,
   providerRegistry: ProviderRegistry,
   taskCache: TaskCacheStore,
+  metricsStore: AnalyticsMetricsStore,
   request: OrchestratorRequest,
 ): Promise<void> {
   switch (request.type) {
@@ -68,7 +70,7 @@ async function handleRequest(
           type: 'taskResult',
           response: await runTaskWithCache(config, providerRegistry, taskRequest, taskCache, {
             createTimestamp,
-          }),
+          }, metricsStore),
         });
       } catch (error) {
         writeProtocolError(request.id, error, {
@@ -96,6 +98,7 @@ async function handleRequest(
               mode: 'stage-rerun',
               rerun: request.rerun,
             },
+            metricsStore,
           ),
         });
       } catch (error) {
@@ -111,7 +114,7 @@ async function handleRequest(
   }
 }
 
-function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRegistry, taskCache: TaskCacheStore): void {
+function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRegistry, taskCache: TaskCacheStore, metricsStore: AnalyticsMetricsStore): void {
   const reader = readline.createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -125,7 +128,7 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
 
     try {
       const request = OrchestratorRequestSchema.parse(JSON.parse(trimmed));
-      void handleRequest(config, providerRegistry, taskCache, request);
+      void handleRequest(config, providerRegistry, taskCache, metricsStore, request);
     } catch (error) {
       writeProtocolError(undefined, error, {
         category: 'schema',
@@ -139,6 +142,7 @@ function attachStdioProtocol(config: RuntimeConfig, providerRegistry: ProviderRe
 
   reader.on('close', () => {
     taskCache.close();
+    metricsStore.close();
     logOrchestrator('stdin closed; shutting down orchestrator process.');
     process.exit(0);
   });
@@ -153,13 +157,14 @@ export function startOrchestrator(): void {
     });
     const cachePath = resolveTaskCachePath();
     const taskCache = new SQLiteTaskCache(cachePath);
+    const metricsStore = new SQLiteAnalyticsMetricsStore(cachePath);
 
     logOrchestrator('orchestrator ready');
     logOrchestrator(`simple=${config.defaultSimpleModel} complex=${config.defaultComplexModel}`);
     logOrchestrator(`structurizer prompt chars=${buildStructurizerSystemPrompt().length}`);
     logOrchestrator(`sqlite cache=${cachePath}`);
 
-    attachStdioProtocol(config, providerRegistry, taskCache);
+    attachStdioProtocol(config, providerRegistry, taskCache, metricsStore);
     writeProtocolEvent({
       type: 'ready',
       transport: 'stdio',

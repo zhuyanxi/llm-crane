@@ -255,6 +255,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Release gate aggregates all evals into pass/fail check with stage identification; run `pnpm --dir apps/orchestrator eval:gate`
 - Release checklist in `llm-crane-docs/V2/release-checklist.md`
 - Prompt versioning tracks per-stage versions and content hashes for structurizer, router, planner, reasoner, verifier, and executor; trace and cache metadata carry prompt versions for invalidation
+- Analytics metrics store records cost, tokens, latency, route, cache, and verifier data per task; supports day/week aggregation in SQLite alongside task cache
 - VS Code task panel now surfaces verifier failure reasons, retry or upgrade actions, manual confirmation, and recorded upgrade cost delta inside result history and trace
 - VS Code task panel now keeps bounded session history and lets user switch displayed result, request preview, and trace without overwriting composer inputs
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages

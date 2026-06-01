@@ -510,6 +510,26 @@ export const RouteScoringConfigSchema = z.object({
   lowConfidenceMargin: z.number().min(0).max(20).default(1.5),
 });
 
+export const TaskMetricsRecordSchema = z.object({
+  id: z.number().int().positive().optional(),
+  timestamp: z.string().datetime(),
+  taskChars: z.number().int().nonnegative(),
+  route: RouteTierSchema,
+  cacheStatus: CacheStatusSchema.optional(),
+  providerId: ProviderIdSchema.optional(),
+  modelId: z.string().min(1).optional(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  totalCostUsd: z.number().nonnegative().optional(),
+  costStatus: CostEstimateStatusSchema.optional(),
+  verifierVerdict: z.enum(['pass', 'fail', 'warning', 'none']).default('none'),
+  strategy: RouteStrategySchema.optional(),
+  budgetPreference: z.enum(['save-cost', 'balanced', 'best-quality']).optional(),
+  promptVersion: z.string().min(1).optional(),
+});
+
 export const RouteScoreFactorSchema = z.object({
   factor: z.string().min(1),
   dimension: RouteScoreDimensionSchema.optional(),
@@ -997,6 +1017,7 @@ export type RouteScoringConfig = z.infer<typeof RouteScoringConfigSchema>;
 export type RouteScoreFactor = z.infer<typeof RouteScoreFactorSchema>;
 export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
 export type RouteAssistantResult = z.infer<typeof RouteAssistantResultSchema>;
+export type TaskMetricsRecord = z.infer<typeof TaskMetricsRecordSchema>;
 export type PlannerResultStatus = z.infer<typeof PlannerResultStatusSchema>;
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type PlanDecisionPoint = z.infer<typeof PlanDecisionPointSchema>;

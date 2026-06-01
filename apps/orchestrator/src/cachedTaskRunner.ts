@@ -1,4 +1,5 @@
 import type { ProviderRegistry } from '@llm-crane/providers';
+import type { AnalyticsMetricsStore } from './analyticsMetrics';
 import {
   CacheInfoSchema,
   TaskResponseSchema,
@@ -322,6 +323,7 @@ export async function runTaskWithCache(
   taskRequest: TaskRequest,
   taskCache: TaskCacheStore,
   overrides: CachedTaskRunnerDependencies = {},
+  metricsStore?: AnalyticsMetricsStore,
 ): Promise<TaskResponse> {
   const dependencies = {
     ...defaultDependencies,
@@ -375,7 +377,7 @@ export async function runTaskWithCache(
     } catch (error) {
       const taskResponse = await dependencies.runTaskPipeline(config, providerRegistry, taskRequest, {
         createTimestamp: dependencies.createTimestamp,
-      });
+      }, undefined, metricsStore);
       const message = error instanceof Error ? error.message : 'unknown cache lookup error';
 
       return annotateLiveResponse(
@@ -409,7 +411,7 @@ export async function runTaskWithCache(
 
   const taskResponse = await dependencies.runTaskPipeline(config, providerRegistry, taskRequest, {
     createTimestamp: dependencies.createTimestamp,
-  });
+  }, undefined, metricsStore);
 
   let cacheWriteEvents: PipelineTraceEvent[] = [];
   let cachedAt: string | undefined;
