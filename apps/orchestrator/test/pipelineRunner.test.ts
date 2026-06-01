@@ -366,6 +366,12 @@ describe('runTaskPipeline', () => {
         .mockResolvedValueOnce({
           providerId: 'anthropic',
           modelId: 'claude-3-5-sonnet-latest',
+          outputText: 'first complex result',
+          latencyMs: 210,
+        })
+        .mockResolvedValueOnce({
+          providerId: 'anthropic',
+          modelId: 'claude-3-5-sonnet-latest',
           outputText: 'planner rerun result',
           latencyMs: 190,
         }),
@@ -684,7 +690,7 @@ describe('runTaskPipeline', () => {
     expect(retryEvents[0]?.metadata.attempt).toBe(1);
     expect(retryEvents[0]?.metadata.nextAttempt).toBe(2);
     expect(retryEvents[0]?.metadata.retryScheduled).toBe(true);
-    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(3);
     expect(response.diagnostic?.category).toBe('provider');
     expect(response.diagnostic?.code).toBe('provider.rate_limit');
     expect(response.costEstimate.status).toBe('unknown');
@@ -746,7 +752,7 @@ describe('runTaskPipeline', () => {
 
     const fallbackEvent = response.trace.find((event) => event.stage === 'executor.fallback');
 
-    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(3);
     expect(response.providerResult.status).toBe('completed');
     expect(response.selectedProvider.modelId).toBe('gpt-4o-mini');
     expect(response.providerResult.modelId).toBe('gpt-4o-mini');
@@ -795,7 +801,7 @@ describe('runTaskPipeline', () => {
       },
     );
 
-    expect(providerRegistry.invoke).toHaveBeenCalledTimes(1);
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
     expect(response.providerResult.status).toBe('failed');
     expect(response.selectedProvider.modelId).toBe('claude-3-5-sonnet-latest');
     expect(response.trace.some((event) => event.stage === 'executor.fallback')).toBe(false);
@@ -844,7 +850,7 @@ describe('runTaskPipeline', () => {
 
     const policyEvent = response.trace.find((event) => event.stage === 'policy.override');
 
-    expect(providerRegistry.invoke).toHaveBeenCalledTimes(1);
+    expect(providerRegistry.invoke).toHaveBeenCalledTimes(2);
     expect(response.providerResult.status).toBe('failed');
     expect(response.trace.some((event) => event.stage === 'executor.fallback')).toBe(false);
     expect(policyEvent?.metadata.fallbackEnabled).toBe(false);

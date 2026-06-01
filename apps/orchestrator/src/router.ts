@@ -1,6 +1,10 @@
+import { ROUTER_ASSISTANT_SYSTEM_PROMPT } from '@llm-crane/prompts';
+import { ProviderInvocationError, type ProviderInvocationRequest } from '@llm-crane/providers';
 import {
+  RouteAssistantResultSchema,
   RouteDecisionSchema,
   RouteScoringConfigSchema,
+  type RouteAssistantResult,
   type RouteDecision,
   type RouteScoreDimension,
   type RouteScoreFactor,
@@ -11,6 +15,10 @@ import {
 } from '@llm-crane/schemas';
 
 export const DEFAULT_ROUTE_SCORING_CONFIG: RouteScoringConfig = RouteScoringConfigSchema.parse({});
+
+const ROUTER_ASSISTANT_MAX_OUTPUT_TOKENS = 600;
+const ROUTER_ASSISTANT_TIMEOUT_MS = 8_000;
+const ROUTER_ASSISTANT_HYBRID_WEIGHT = 0.35;
 
 function unique(items: string[]): string[] {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
@@ -323,4 +331,196 @@ export function parseRouteDecision(candidate: unknown): RouteDecision {
 
 export function routeTask(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>): RouteDecision {
   return parseRouteDecision(inferRouteDecision(result, scoringConfig));
+}
+
+type RouterAssistantProviderInvoker = {
+  invoke(request: ProviderInvocationRequest): Promise<{
+    providerId: string;
+    modelId: string;
+    outputText: string;
+    latencyMs: number;
+  }>;
+};
+
+function buildRouterAssistantUserPrompt(result: StructurizerResult): string {
+  const task = result.structuredTask;
+  return [
+    'Review this structured task and return a JSON routing advisory.',
+    `taskType=${task.taskType}`,
+    `target=${task.target.kind}`,
+    `qualityBar=${task.qualityBar}`,
+    `constraints=${task.constraints.length}`,
+    `openQuestions=${task.openQuestions.length}`,
+    `uncertaintyReasons=${task.uncertaintyReasons.length}`,
+    `contextSummaryCount=${task.contextSummary.length}`,
+    task.constraints.length > 0 ? `First constraint: ${task.constraints[0]}` : undefined,
+    task.openQuestions.length > 0 ? `First open question: ${task.openQuestions[0]}` : undefined,
+    task.uncertaintyReasons.length > 0 ? `First uncertainty: ${task.uncertaintyReasons[0]}` : undefined,
+    'Return JSON only. No markdown.',
+  ].filter(Boolean).join('\n');
+}
+
+function extractJsonCandidate(text: string): string {
+  const trimmed = text.trim();
+  const jsonStart = trimmed.indexOf('{');
+  if (jsonStart === -1) {
+    return trimmed;
+  }
+
+  const braceCount: number[] = [];
+  for (let i = jsonStart; i < trimmed.length; i += 1) {
+    if (trimmed[i] === '{') {
+      braceCount.push(1);
+    } else if (trimmed[i] === '}') {
+      braceCount.pop();
+    }
+    if (braceCount.length === 0) {
+      return trimmed.slice(jsonStart, i + 1);
+    }
+  }
+
+  while (braceCount.length > 0 && trimmed.endsWith('}')) {
+    braceCount.pop();
+    const lastBrace = trimmed.lastIndexOf('}');
+    return trimmed.slice(jsonStart, lastBrace + 1);
+  }
+
+  return trimmed.slice(jsonStart);
+}
+
+function parseRouterAssistantOutput(rawOutput: string, modelId: string, latencyMs: number): RouteAssistantResult {
+  try {
+    const candidate = extractJsonCandidate(rawOutput);
+    const parsed = JSON.parse(candidate);
+
+    return RouteAssistantResultSchema.parse({
+      status: 'available',
+      modelId,
+      suggestedRoute: parsed.suggestedRoute,
+      complexityLabel: parsed.complexityLabel,
+      riskLabel: parsed.riskLabel,
+      budgetLabel: parsed.budgetLabel,
+      reasoning: parsed.reasoning,
+      confidence: parsed.confidence,
+      latencyMs,
+    });
+  } catch {
+    return RouteAssistantResultSchema.parse({
+      status: 'unavailable',
+      modelId,
+      latencyMs,
+      error: 'Router assistant response could not be parsed.',
+    });
+  }
+}
+
+function labelToScoreAdjustment(label: string | undefined): number {
+  switch (label) {
+    case 'low':
+      return -2;
+    case 'moderate':
+      return 0;
+    case 'high':
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+function mergeAssistantScores(
+  rulesDecision: RouteDecision,
+  assistantResult: RouteAssistantResult,
+): RouteDecision {
+  if (assistantResult.status !== 'available') {
+    return RouteDecisionSchema.parse({
+      ...rulesDecision,
+      assistantResult,
+    });
+  }
+
+  const weight = ROUTER_ASSISTANT_HYBRID_WEIGHT;
+  const adjustedComplexity = clampScore(
+    rulesDecision.complexityScore + labelToScoreAdjustment(assistantResult.complexityLabel) * weight,
+  );
+  const adjustedRisk = clampScore(
+    (rulesDecision.riskScore ?? 0) + labelToScoreAdjustment(assistantResult.riskLabel) * weight,
+  );
+  const adjustedBudget = clampScore(
+    (rulesDecision.budgetPressureScore ?? 0) + labelToScoreAdjustment(assistantResult.budgetLabel) * weight,
+  );
+  const config = rulesDecision.scoringConfig ?? DEFAULT_ROUTE_SCORING_CONFIG;
+  const compositeScore = buildCompositeScore(adjustedComplexity, adjustedRisk, adjustedBudget, config);
+  const suggestedRoute: RouteTier = assistantResult.suggestedRoute ?? (compositeScore >= config.complexThreshold ? 'complex' : 'simple');
+  const confidence = Math.max(
+    rulesDecision.confidence,
+    (assistantResult.confidence ?? 0.5) * 0.7 + rulesDecision.confidence * 0.3,
+  );
+
+  return RouteDecisionSchema.parse({
+    ...rulesDecision,
+    route: suggestedRoute,
+    reason: `${rulesDecision.reason} Model advisor: ${assistantResult.reasoning ?? 'no reasoning provided.'}`,
+    confidence,
+    complexityScore: adjustedComplexity,
+    riskScore: adjustedRisk,
+    budgetPressureScore: adjustedBudget,
+    compositeScore,
+    strategy: 'rules-v2-hybrid',
+    assistantResult,
+  });
+}
+
+async function invokeRouterAssistant(
+  providerInvoker: RouterAssistantProviderInvoker,
+  modelId: string,
+  result: StructurizerResult,
+): Promise<RouteAssistantResult> {
+  const started = Date.now();
+
+  try {
+    const response = await providerInvoker.invoke({
+      modelId,
+      prompt: buildRouterAssistantUserPrompt(result),
+      systemPrompt: ROUTER_ASSISTANT_SYSTEM_PROMPT,
+      temperature: 0,
+      maxOutputTokens: ROUTER_ASSISTANT_MAX_OUTPUT_TOKENS,
+      timeoutMs: ROUTER_ASSISTANT_TIMEOUT_MS,
+      metadata: {
+        assistant: 'router',
+        taskType: result.structuredTask.taskType,
+      },
+    });
+
+    return parseRouterAssistantOutput(response.outputText, modelId, Date.now() - started);
+  } catch (error) {
+    const reason = error instanceof ProviderInvocationError
+      ? `Router assistant provider error: ${error.message}`
+      : error instanceof Error
+        ? `Router assistant failed: ${error.message}`
+        : 'Router assistant failed with unknown error.';
+
+    return RouteAssistantResultSchema.parse({
+      status: 'unavailable',
+      modelId,
+      latencyMs: Date.now() - started,
+      error: reason,
+    });
+  }
+}
+
+export async function routeTaskWithAssistant(
+  providerInvoker: RouterAssistantProviderInvoker | undefined,
+  modelId: string | undefined,
+  result: StructurizerResult,
+  scoringConfig?: Partial<RouteScoringConfig>,
+): Promise<RouteDecision> {
+  const rulesDecision = routeTask(result, scoringConfig);
+
+  if (!providerInvoker || !modelId) {
+    return rulesDecision;
+  }
+
+  const assistantResult = await invokeRouterAssistant(providerInvoker, modelId, result);
+
+  return mergeAssistantScores(rulesDecision, assistantResult);
 }

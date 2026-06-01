@@ -16,6 +16,15 @@ export const ROUTER_SYSTEM_PROMPT = [
   'Prefer cheaper model unless risk or ambiguity is high.',
 ].join(' ');
 
+export const ROUTER_ASSISTANT_SYSTEM_PROMPT = [
+  'You are a lightweight routing assistant for a developer tool pipeline.',
+  'Your job: review a structured task summary and return a strict JSON routing advisory.',
+  'Return JSON only — no markdown, no code fences, no extra text.',
+  'Fields: suggestedRoute (simple|complex), complexityLabel (low|moderate|high|unclear), riskLabel (low|moderate|high|unclear), budgetLabel (low|moderate|high|unclear), reasoning (1-2 sentences), confidence (0-1).',
+  'If you cannot decide confidently, use "unclear" labels and suggest "complex" as safe default.',
+  'Prefer "simple" only when task scope, risk, and budget pressure are all clearly low.',
+].join(' ');
+
 export const PLANNER_SYSTEM_PROMPT = [
   'Turn complex task into conservative execution plan in strict JSON.',
   'Return fields: status, summary, steps, decisionPoints, openQuestions, downstreamHints, warnings, fallbackReason.',

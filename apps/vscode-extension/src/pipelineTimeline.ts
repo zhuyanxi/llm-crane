@@ -160,6 +160,9 @@ function buildStageSummary(stage: PipelineStageState): string {
         `budget=${output.budgetPressureScore ?? 0}`,
         `composite=${output.compositeScore ?? output.complexityScore}`,
       ];
+      if (output.strategy) {
+        parts.push(`strategy=${output.strategy}`);
+      }
       const confidence = formatConfidence(output.confidence);
       if (confidence) {
         parts.push(confidence);

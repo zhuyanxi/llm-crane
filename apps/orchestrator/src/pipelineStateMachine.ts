@@ -376,6 +376,7 @@ export function createRouterStageOutput(routeDecision: RouteDecision): PipelineS
     budgetPressureScore: routeDecision.budgetPressureScore,
     compositeScore: routeDecision.compositeScore,
     confidence: routeDecision.confidence,
+    strategy: routeDecision.strategy,
     fallbackReason: routeDecision.fallbackReason,
   };
 }

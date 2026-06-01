@@ -26,6 +26,9 @@ export function buildRoutingInsight(
   if (taskResponse.routeDecision.strategy) {
     routeDetailParts.push(`strategy=${taskResponse.routeDecision.strategy}`);
   }
+  if (taskResponse.routeDecision.assistantResult?.status === 'available') {
+    routeDetailParts.push(`assistant=${taskResponse.routeDecision.assistantResult.modelId}(${taskResponse.routeDecision.assistantResult.latencyMs}ms)`);
+  }
 
   const overrideInsight = describeTaskModelOverride(
     taskResponse.checkpoint.taskRequest.policyOverrides,

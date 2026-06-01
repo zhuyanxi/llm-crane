@@ -60,7 +60,7 @@ import {
   createSkippedReasonerResult,
   reasonTask as reasonTaskBase,
 } from './reasoner';
-import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask } from './router';
+import { buildRouterScoreInput, createSafeFallbackRouteDecision, routeTask, routeTaskWithAssistant } from './router';
 import { buildStructurizerPrompt, createFallbackStructurizerResult, structurizeTaskRequest } from './structurizer';
 import { createTaskCheckpoint } from './taskCheckpoint';
 import { createVerifierFailureResult, mergeVerificationResults, runRuleVerifiers, verifyTaskWithModel } from './verifier';
@@ -657,7 +657,11 @@ export async function runTaskPipeline(
           inputChars: routerScoreInput.length,
         }),
       });
-      routeDecision = dependencies.routeTask(structurizerResult);
+      routeDecision = await routeTaskWithAssistant(
+        providerRegistry,
+        config.defaultSimpleModel,
+        structurizerResult,
+      );
       pipelineMachine.updateContext({
         routeDecision,
       });
@@ -668,7 +672,7 @@ export async function runTaskPipeline(
       trace.add(
         'router.finish',
         routeDecision.status === 'routed' ? 'completed' : 'failed',
-        `route=${routeDecision.route}; complexity=${routeDecision.complexityScore}; risk=${routeDecision.riskScore ?? 0}; budget=${routeDecision.budgetPressureScore ?? 0}; composite=${routeDecision.compositeScore ?? routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
+        `route=${routeDecision.route}; complexity=${routeDecision.complexityScore}; risk=${routeDecision.riskScore ?? 0}; budget=${routeDecision.budgetPressureScore ?? 0}; composite=${routeDecision.compositeScore ?? routeDecision.complexityScore}; confidence=${routeDecision.confidence}; strategy=${routeDecision.strategy}`,
         {
           metadata: compactMetadata({
             route: routeDecision.route,
@@ -682,6 +686,10 @@ export async function runTaskPipeline(
             riskWeight: routeDecision.scoringConfig?.riskWeight,
             budgetPressureWeight: routeDecision.scoringConfig?.budgetPressureWeight,
             complexThreshold: routeDecision.scoringConfig?.complexThreshold,
+            routerStrategy: routeDecision.strategy,
+            assistantStatus: routeDecision.assistantResult?.status,
+            assistantModelId: routeDecision.assistantResult?.modelId,
+            assistantLatencyMs: routeDecision.assistantResult?.latencyMs,
           }),
           error: routeDecision.fallbackReason
             ? {

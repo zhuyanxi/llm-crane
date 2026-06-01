@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StructurizerResult, TaskRequest } from '@llm-crane/schemas';
-import { buildRouterScoreInput, parseRouteDecision, routeTask } from '../src/router';
+import { buildRouterScoreInput, parseRouteDecision, routeTask, routeTaskWithAssistant } from '../src/router';
 import { structurizeTaskRequest } from '../src/structurizer';
 
 function makeTaskRequest(task: string, overrides: Partial<TaskRequest> = {}): TaskRequest {
@@ -131,5 +131,121 @@ describe('buildRouterScoreInput', () => {
 
     expect(summary).toContain('taskType=debug');
     expect(summary).toContain('target=file');
+  });
+});
+
+describe('routeTaskWithAssistant', () => {
+  function makeStructurizerResult(overrides: Partial<StructurizerResult['structuredTask']> = {}): StructurizerResult {
+    return {
+      status: 'structured',
+      structuredTask: {
+        taskType: 'debug',
+        qualityBar: 'balanced',
+        target: { kind: 'file', value: '/workspace/src/auth.ts' },
+        constraints: ['Keep public API stable'],
+        expectedOutput: [],
+        openQuestions: ['Which auth provider?'],
+        uncertaintyReasons: [],
+        contextSummary: ['file / primary / typescript / /workspace/src/auth.ts'],
+        ...overrides,
+      },
+      warnings: [],
+    };
+  }
+
+  it('returns rules-only decision when provider invoker is undefined', async () => {
+    const decision = await routeTaskWithAssistant(undefined, 'cheap-model', makeStructurizerResult());
+
+    expect(decision.strategy).toBe('rules-v2');
+    expect(decision.assistantResult).toBeUndefined();
+    expect(decision.route).toBeDefined();
+  });
+
+  it('merges model high-risk suggestion into rules decision', async () => {
+    const mockInvoker = {
+      async invoke() {
+        return {
+          providerId: 'openai',
+          modelId: 'cheap-model',
+          outputText: JSON.stringify({
+            suggestedRoute: 'complex',
+            complexityLabel: 'moderate',
+            riskLabel: 'high',
+            budgetLabel: 'moderate',
+            reasoning: 'Open question about auth provider raises integration risk.',
+            confidence: 0.72,
+          }),
+          latencyMs: 45,
+        };
+      },
+    };
+
+    const decision = await routeTaskWithAssistant(
+      mockInvoker,
+      'cheap-model',
+      makeStructurizerResult(),
+    );
+
+    expect(decision.strategy).toBe('rules-v2-hybrid');
+    expect(decision.assistantResult?.status).toBe('available');
+    expect(decision.assistantResult?.reasoning).toContain('auth provider');
+    expect(decision.reason).toContain('Model advisor');
+    expect((decision.riskScore ?? 0)).toBeGreaterThan(0);
+  });
+
+  it('falls back to rules-only when model invocation fails', async () => {
+    const mockInvoker = {
+      async invoke() {
+        throw new Error('Network timeout');
+      },
+    };
+
+    const decision = await routeTaskWithAssistant(
+      mockInvoker,
+      'cheap-model',
+      makeStructurizerResult(),
+    );
+
+    expect(decision.strategy).toBe('rules-v2');
+    expect(decision.assistantResult?.status).toBe('unavailable');
+    expect(decision.assistantResult?.error).toContain('Network timeout');
+    expect(decision.route).toBeDefined();
+  });
+
+  it('uses model suggested-route when model is confident and rules disagree', async () => {
+    const mockInvoker = {
+      async invoke() {
+        return {
+          providerId: 'openai',
+          modelId: 'cheap-model',
+          outputText: JSON.stringify({
+            suggestedRoute: 'complex',
+            complexityLabel: 'high',
+            riskLabel: 'high',
+            budgetLabel: 'high',
+            reasoning: 'Debug task with open questions needs stronger reasoning path.',
+            confidence: 0.88,
+          }),
+          latencyMs: 32,
+        };
+      },
+    };
+
+    const result = makeStructurizerResult({
+      taskType: 'debug',
+      target: { kind: 'selection', value: 'const x = 1;' },
+      qualityBar: 'fast',
+      constraints: [],
+      openQuestions: [],
+      uncertaintyReasons: [],
+      contextSummary: [],
+      expectedOutput: [],
+    });
+
+    const decision = await routeTaskWithAssistant(mockInvoker, 'cheap-model', result);
+
+    expect(decision.strategy).toBe('rules-v2-hybrid');
+    expect(decision.assistantResult?.suggestedRoute).toBe('complex');
+    expect(decision.confidence).toBeGreaterThanOrEqual(0.7);
   });
 });

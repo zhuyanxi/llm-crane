@@ -245,6 +245,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - VS Code task panel now aggregates pipeline state plus stage trace into timeline cards so users can inspect duration, summaries, and failed stage reasons without scanning raw trace only
 - VS Code task panel now surfaces router confidence, `routeReason`, override source, and manual model override controls with configured-model validation
 - Router now emits V2 score dimensions: `complexityScore`, `riskScore`, `budgetPressureScore`, `compositeScore`, `scoreBreakdown`, and `scoringConfig`; trace and UI consume those scores while preserving legacy route payload compatibility
+- Router can optionally call low-cost model assistant to refine routing scores; hybrid strategy merges model labels with rules scores and falls back to pure rules on model error or timeout
 - VS Code task panel now surfaces verifier failure reasons, retry or upgrade actions, manual confirmation, and recorded upgrade cost delta inside result history and trace
 - VS Code task panel now keeps bounded session history and lets user switch displayed result, request preview, and trace without overwriting composer inputs
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
