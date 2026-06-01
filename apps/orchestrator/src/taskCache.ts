@@ -9,6 +9,8 @@ import {
   STRUCTURIZER_SYSTEM_PROMPT,
   VERIFIER_SYSTEM_PROMPT,
   V1_TASK_TEMPLATE_PROMPT_ASSETS,
+  PROMPT_VERSION_DETAILS,
+  summarizePromptVersions,
 } from '@llm-crane/prompts';
 import { BUILT_IN_TASK_TEMPLATES, type RuntimeConfig, type TaskRequest, type TaskResponse } from '@llm-crane/schemas';
 
@@ -25,6 +27,7 @@ type PersistedTaskResponse = Pick<
 export type TaskCacheMetadata = {
   schemaVersion: string;
   promptVersion: string;
+  promptVersionDetail: string;
   templateVersion: string;
   ttlMs: number;
 };
@@ -126,6 +129,7 @@ export function createTaskCacheMetadata(config: RuntimeConfig): TaskCacheMetadat
   return {
     schemaVersion: CACHE_SCHEMA_VERSION,
     promptVersion: PROMPT_VERSION,
+    promptVersionDetail: summarizePromptVersions(),
     templateVersion: TEMPLATE_VERSION,
     ttlMs: resolveCacheTtlMs(config),
   };
@@ -159,6 +163,15 @@ export function validateCachedTaskRecord(
       status: 'invalid',
       reason: 'prompt-version',
       detail: 'prompt assets changed since cache entry was stored',
+      metadata: cachedRecord.metadata,
+    };
+  }
+
+  if (cachedRecord.metadata.promptVersionDetail !== currentMetadata.promptVersionDetail) {
+    return {
+      status: 'invalid',
+      reason: 'prompt-version',
+      detail: 'per-stage prompt version detail changed since cache entry was stored',
       metadata: cachedRecord.metadata,
     };
   }

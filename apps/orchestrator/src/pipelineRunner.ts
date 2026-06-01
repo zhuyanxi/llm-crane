@@ -1,6 +1,6 @@
 import { createDiagnosticFromError, createProviderDiagnostic } from '@llm-crane/core';
 import { estimateModelCost, getProviderIdForModel, type ProviderRegistry } from '@llm-crane/providers';
-import { PLANNER_SYSTEM_PROMPT, buildExecutorSystemPrompt, buildStructurizerSystemPrompt } from '@llm-crane/prompts';
+import { PLANNER_SYSTEM_PROMPT, buildExecutorSystemPrompt, buildStructurizerSystemPrompt, summarizePromptVersions } from '@llm-crane/prompts';
 import {
   CostEstimateSchema,
   TaskResponseSchema,
@@ -509,6 +509,7 @@ export async function runTaskPipeline(
       constraintCount: taskRequest.constraints.length,
       runMode: runMode.mode,
       targetStageId: runMode.mode === 'stage-rerun' ? runMode.rerun.targetStageId : undefined,
+      promptVersions: summarizePromptVersions(),
     }),
   });
   if (rerunRequest) {
@@ -555,6 +556,7 @@ export async function runTaskPipeline(
       metadata: compactMetadata({
         taskChars: taskRequest.task.length,
         contextCount: taskRequest.contexts.length,
+        promptVersion: summarizePromptVersions(['structurizer']),
       }),
     });
     pipelineMachine.startStage('structurizer', createStructurizerStageInput(taskRequest));
@@ -751,6 +753,7 @@ export async function runTaskPipeline(
         metadata: compactMetadata({
           route: routeDecision.route,
           taskType: structurizerResult.structuredTask.taskType,
+          promptVersion: summarizePromptVersions(['planner']),
           openQuestions: structurizerResult.structuredTask.openQuestions.length,
         }),
       });

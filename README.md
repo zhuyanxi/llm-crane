@@ -249,6 +249,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Router can optionally call low-cost model assistant to refine routing scores; hybrid strategy merges model labels with rules scores and falls back to pure rules on model error or timeout
 - VS Code settings now include `llmCrane.budgetPreference` (save-cost, balanced, best-quality) to adjust routing budget pressure and complex threshold; conflict warnings shown when cost-saving clashes with high quality bar
 - Routing eval suite in `apps/orchestrator/evals/` validates expected routes across 10 samples covering refactor, debug, analysis, implementation, and test task types; run `pnpm --dir apps/orchestrator eval:routing`
+- Prompt versioning tracks per-stage versions and content hashes for structurizer, router, planner, reasoner, verifier, and executor; trace and cache metadata carry prompt versions for invalidation
 - VS Code task panel now surfaces verifier failure reasons, retry or upgrade actions, manual confirmation, and recorded upgrade cost delta inside result history and trace
 - VS Code task panel now keeps bounded session history and lets user switch displayed result, request preview, and trace without overwriting composer inputs
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages
