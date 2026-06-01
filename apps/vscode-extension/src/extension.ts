@@ -1078,7 +1078,7 @@ function formatTaskResponseSummary(
     ? ` Selection: ${overrideSummary.summary}.`
     : ` Selection: ${overrideSummary.summary}. ${overrideSummary.detail}`;
 
-  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${verifierSuffix}${runSuffix}${overrideSuffix}${diagnosticSuffix}`;
+  return `${processState}${pidSuffix} Route: ${taskResponse.routeDecision.route}/${taskResponse.routeDecision.status} composite=${taskResponse.routeDecision.compositeScore ?? taskResponse.routeDecision.complexityScore}. Provider: ${taskResponse.selectedProvider.providerId}/${taskResponse.selectedProvider.modelId}${runtimeSuffix} (${providerStatus}). Cache: ${cacheStatus}.${pipelineSuffix}${plannerSuffix}${reasonerSuffix}${verifierSuffix}${runSuffix}${overrideSuffix}${diagnosticSuffix}`;
 }
 
 function hasTaskFailureState(taskResponse: TaskResponse): boolean {

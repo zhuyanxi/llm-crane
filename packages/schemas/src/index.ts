@@ -483,10 +483,21 @@ export const StructurizerResultSchema = z.object({
 
 export const RouteTierSchema = z.enum(['simple', 'complex']);
 
-export const RouteStrategySchema = z.enum(['rules-v1', 'safe-fallback']);
+export const RouteStrategySchema = z.enum(['rules-v1', 'rules-v2', 'safe-fallback']);
+
+export const RouteScoreDimensionSchema = z.enum(['complexity', 'risk', 'budget-pressure']);
+
+export const RouteScoringConfigSchema = z.object({
+  complexityWeight: z.number().min(0).max(1).default(0.55),
+  riskWeight: z.number().min(0).max(1).default(0.3),
+  budgetPressureWeight: z.number().min(0).max(1).default(0.15),
+  complexThreshold: z.number().min(0).max(20).default(4),
+  lowConfidenceMargin: z.number().min(0).max(20).default(1.5),
+});
 
 export const RouteScoreFactorSchema = z.object({
   factor: z.string().min(1),
+  dimension: RouteScoreDimensionSchema.optional(),
   score: z.number().int().min(0).max(4),
   detail: z.string().min(1),
 });
@@ -497,7 +508,11 @@ export const RouteDecisionSchema = z.object({
   reason: z.string().min(1),
   confidence: z.number().min(0).max(1),
   complexityScore: z.number().int().min(0).max(20),
+  riskScore: z.number().int().min(0).max(20).optional(),
+  budgetPressureScore: z.number().int().min(0).max(20).optional(),
+  compositeScore: z.number().min(0).max(20).optional(),
   scoreBreakdown: z.array(RouteScoreFactorSchema).default([]),
+  scoringConfig: RouteScoringConfigSchema.optional(),
   strategy: RouteStrategySchema.default('rules-v1'),
   fallbackReason: z.string().min(1).optional(),
 });
@@ -712,6 +727,9 @@ export const PipelineStageOutputSchema = z.discriminatedUnion('stageId', [
     status: z.enum(['routed', 'fallback']),
     route: RouteTierSchema,
     complexityScore: CountSchema,
+    riskScore: CountSchema.optional(),
+    budgetPressureScore: CountSchema.optional(),
+    compositeScore: z.number().min(0).max(20).optional(),
     confidence: z.number().min(0).max(1),
     fallbackReason: z.string().min(1).optional(),
   }),
@@ -956,6 +974,8 @@ export type StructuredTask = z.infer<typeof StructuredTaskSchema>;
 export type StructurizerResult = z.infer<typeof StructurizerResultSchema>;
 export type RouteTier = z.infer<typeof RouteTierSchema>;
 export type RouteStrategy = z.infer<typeof RouteStrategySchema>;
+export type RouteScoreDimension = z.infer<typeof RouteScoreDimensionSchema>;
+export type RouteScoringConfig = z.infer<typeof RouteScoringConfigSchema>;
 export type RouteScoreFactor = z.infer<typeof RouteScoreFactorSchema>;
 export type RouteDecision = z.infer<typeof RouteDecisionSchema>;
 export type PlannerResultStatus = z.infer<typeof PlannerResultStatusSchema>;

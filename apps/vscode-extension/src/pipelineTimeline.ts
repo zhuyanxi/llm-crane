@@ -153,7 +153,13 @@ function buildStageSummary(stage: PipelineStageState): string {
       return parts.join(' · ');
     }
     case 'router': {
-      const parts = [`${output.route} route`, `score=${output.complexityScore}`];
+      const parts = [
+        `${output.route} route`,
+        `complexity=${output.complexityScore}`,
+        `risk=${output.riskScore ?? 0}`,
+        `budget=${output.budgetPressureScore ?? 0}`,
+        `composite=${output.compositeScore ?? output.complexityScore}`,
+      ];
       const confidence = formatConfidence(output.confidence);
       if (confidence) {
         parts.push(confidence);

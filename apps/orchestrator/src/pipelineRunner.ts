@@ -635,6 +635,9 @@ export async function runTaskPipeline(
       metadata: compactMetadata({
         route: routeDecision.route,
         complexityScore: routeDecision.complexityScore,
+        riskScore: routeDecision.riskScore ?? 0,
+        budgetPressureScore: routeDecision.budgetPressureScore ?? 0,
+        compositeScore: routeDecision.compositeScore ?? routeDecision.complexityScore,
         targetStageId: rerunRequest?.targetStageId,
       }),
     });
@@ -665,13 +668,20 @@ export async function runTaskPipeline(
       trace.add(
         'router.finish',
         routeDecision.status === 'routed' ? 'completed' : 'failed',
-        `route=${routeDecision.route}; score=${routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
+        `route=${routeDecision.route}; complexity=${routeDecision.complexityScore}; risk=${routeDecision.riskScore ?? 0}; budget=${routeDecision.budgetPressureScore ?? 0}; composite=${routeDecision.compositeScore ?? routeDecision.complexityScore}; confidence=${routeDecision.confidence}`,
         {
           metadata: compactMetadata({
             route: routeDecision.route,
             complexityScore: routeDecision.complexityScore,
+            riskScore: routeDecision.riskScore ?? 0,
+            budgetPressureScore: routeDecision.budgetPressureScore ?? 0,
+            compositeScore: routeDecision.compositeScore ?? routeDecision.complexityScore,
             confidence: routeDecision.confidence,
             scoreFactors: routeDecision.scoreBreakdown.length,
+            complexityWeight: routeDecision.scoringConfig?.complexityWeight,
+            riskWeight: routeDecision.scoringConfig?.riskWeight,
+            budgetPressureWeight: routeDecision.scoringConfig?.budgetPressureWeight,
+            complexThreshold: routeDecision.scoringConfig?.complexThreshold,
           }),
           error: routeDecision.fallbackReason
             ? {

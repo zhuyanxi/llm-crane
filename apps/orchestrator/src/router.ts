@@ -1,13 +1,16 @@
 import {
   RouteDecisionSchema,
+  RouteScoringConfigSchema,
   type RouteDecision,
+  type RouteScoreDimension,
   type RouteScoreFactor,
+  type RouteScoringConfig,
   type RouteTier,
   type StructuredTask,
   type StructurizerResult,
 } from '@llm-crane/schemas';
 
-const SIMPLE_ROUTE_THRESHOLD = 4;
+export const DEFAULT_ROUTE_SCORING_CONFIG: RouteScoringConfig = RouteScoringConfigSchema.parse({});
 
 function unique(items: string[]): string[] {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))];
@@ -17,11 +20,35 @@ function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, Number(value.toFixed(2))));
 }
 
-function makeFactor(factor: string, score: number, detail: string): RouteScoreFactor {
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(20, Math.round(value)));
+}
+
+function makeFactor(dimension: RouteScoreDimension, factor: string, score: number, detail: string): RouteScoreFactor {
   return {
     factor,
+    dimension,
     score,
     detail,
+  };
+}
+
+function resolveRouteScoringConfig(config?: Partial<RouteScoringConfig>): RouteScoringConfig {
+  const resolvedConfig = RouteScoringConfigSchema.parse({
+    ...DEFAULT_ROUTE_SCORING_CONFIG,
+    ...config,
+  });
+  const weightTotal = resolvedConfig.complexityWeight + resolvedConfig.riskWeight + resolvedConfig.budgetPressureWeight;
+
+  if (weightTotal <= 0) {
+    return DEFAULT_ROUTE_SCORING_CONFIG;
+  }
+
+  return {
+    ...resolvedConfig,
+    complexityWeight: Number((resolvedConfig.complexityWeight / weightTotal).toFixed(3)),
+    riskWeight: Number((resolvedConfig.riskWeight / weightTotal).toFixed(3)),
+    budgetPressureWeight: Number((resolvedConfig.budgetPressureWeight / weightTotal).toFixed(3)),
   };
 }
 
@@ -41,75 +68,165 @@ function buildComplexityFactors(result: StructurizerResult): RouteScoreFactor[] 
   const factors: RouteScoreFactor[] = [];
 
   if (result.status === 'fallback') {
-    factors.push(makeFactor('structurizer-status', 3, 'Structurizer already fell back; use safer path.'));
+    factors.push(makeFactor('complexity', 'structurizer-status', 3, 'Structurizer already fell back; use safer path.'));
   }
 
   switch (structuredTask.taskType) {
     case 'debug':
     case 'analysis':
     case 'implementation':
-      factors.push(makeFactor('task-type', 2, `${structuredTask.taskType} tasks usually need broader reasoning.`));
+      factors.push(makeFactor('complexity', 'task-type', 2, `${structuredTask.taskType} tasks usually need broader reasoning.`));
       break;
     case 'test':
-      factors.push(makeFactor('task-type', 1, 'Test work often spans assertions and fixtures.'));
+      factors.push(makeFactor('complexity', 'task-type', 1, 'Test work often spans assertions and fixtures.'));
       break;
     case 'other':
-      factors.push(makeFactor('task-type', 2, 'Unknown task type increases routing risk.'));
+      factors.push(makeFactor('complexity', 'task-type', 2, 'Unknown task type increases routing risk.'));
       break;
     default:
-      factors.push(makeFactor('task-type', 0, 'Refactor task with narrow scope stays cheap by default.'));
+      factors.push(makeFactor('complexity', 'task-type', 0, 'Refactor task with narrow scope stays cheap by default.'));
       break;
   }
 
   switch (structuredTask.target.kind) {
     case 'workspace':
-      factors.push(makeFactor('target-scope', 2, 'Workspace target expands scope across many files.'));
+      factors.push(makeFactor('complexity', 'target-scope', 2, 'Workspace target expands scope across many files.'));
       break;
     case 'file':
-      factors.push(makeFactor('target-scope', 1, 'File target is bounded but may still require broad edits.'));
+      factors.push(makeFactor('complexity', 'target-scope', 1, 'File target is bounded but may still require broad edits.'));
       break;
     case 'unknown':
-      factors.push(makeFactor('target-scope', 2, 'Unknown target makes cheap routing unsafe.'));
+      factors.push(makeFactor('complexity', 'target-scope', 2, 'Unknown target makes cheap routing unsafe.'));
       break;
     default:
-      factors.push(makeFactor('target-scope', 0, 'Selection or symbol target keeps scope narrow.'));
+      factors.push(makeFactor('complexity', 'target-scope', 0, 'Selection or symbol target keeps scope narrow.'));
       break;
   }
 
   if (structuredTask.qualityBar === 'high') {
-    factors.push(makeFactor('quality-bar', 2, 'High quality bar prefers more capable path.'));
+    factors.push(makeFactor('complexity', 'quality-bar', 2, 'High quality bar prefers more capable path.'));
   } else if (structuredTask.qualityBar === 'balanced') {
-    factors.push(makeFactor('quality-bar', 1, 'Balanced quality bar allows moderate complexity budget.'));
+    factors.push(makeFactor('complexity', 'quality-bar', 1, 'Balanced quality bar allows moderate complexity budget.'));
   } else {
-    factors.push(makeFactor('quality-bar', 0, 'Fast quality bar favors cheaper path.'));
+    factors.push(makeFactor('complexity', 'quality-bar', 0, 'Fast quality bar favors cheaper path.'));
   }
 
   if (structuredTask.constraints.length >= 4) {
-    factors.push(makeFactor('constraints', 2, 'Many constraints increase routing complexity.'));
+    factors.push(makeFactor('complexity', 'constraints', 2, 'Many constraints increase routing complexity.'));
   } else if (structuredTask.constraints.length >= 2) {
-    factors.push(makeFactor('constraints', 1, 'Some constraints need closer reasoning.'));
+    factors.push(makeFactor('complexity', 'constraints', 1, 'Some constraints need closer reasoning.'));
   } else {
-    factors.push(makeFactor('constraints', 0, 'Constraint count stays low.'));
+    factors.push(makeFactor('complexity', 'constraints', 0, 'Constraint count stays low.'));
   }
 
   if (structuredTask.contextSummary.length >= 2) {
-    factors.push(makeFactor('context-size', 1, 'Multiple attached contexts widen reasoning surface.'));
+    factors.push(makeFactor('complexity', 'context-size', 1, 'Multiple attached contexts widen reasoning surface.'));
   } else {
-    factors.push(makeFactor('context-size', 0, 'Context remains small.'));
+    factors.push(makeFactor('complexity', 'context-size', 0, 'Context remains small.'));
   }
 
   if (structuredTask.openQuestions.length > 0) {
-    factors.push(makeFactor('open-questions', 2, 'Open questions reduce confidence in cheap path.'));
+    factors.push(makeFactor('complexity', 'open-questions', 2, 'Open questions reduce confidence in cheap path.'));
   }
 
   if (structuredTask.uncertaintyReasons.length > 0) {
-    factors.push(makeFactor('uncertainty', 2, 'Uncertainty markers push toward safer route.'));
+    factors.push(makeFactor('complexity', 'uncertainty', 2, 'Uncertainty markers push toward safer route.'));
   }
 
   return factors;
 }
 
-function buildRouteReason(route: RouteTier, factors: RouteScoreFactor[]): string {
+function buildRiskFactors(result: StructurizerResult): RouteScoreFactor[] {
+  const structuredTask = result.structuredTask;
+  const factors: RouteScoreFactor[] = [];
+
+  if (result.status === 'fallback') {
+    factors.push(makeFactor('risk', 'structurizer-fallback', 4, 'Structurizer fallback means router should avoid cheap uncertain route.'));
+  }
+
+  if (structuredTask.target.kind === 'workspace' || structuredTask.target.kind === 'unknown') {
+    factors.push(makeFactor('risk', 'target-risk', 3, `${structuredTask.target.kind} target raises missed-scope risk.`));
+  } else if (structuredTask.target.kind === 'file') {
+    factors.push(makeFactor('risk', 'target-risk', 1, 'File target carries moderate integration risk.'));
+  } else {
+    factors.push(makeFactor('risk', 'target-risk', 0, 'Selection or symbol target limits blast radius.'));
+  }
+
+  if (structuredTask.openQuestions.length > 0) {
+    factors.push(makeFactor('risk', 'open-questions', 3, 'Open questions make confident cheap routing risky.'));
+  }
+
+  if (structuredTask.uncertaintyReasons.length > 0) {
+    factors.push(makeFactor('risk', 'uncertainty', 3, 'Uncertainty reasons indicate hidden requirements.'));
+  }
+
+  if (structuredTask.constraints.length >= 4) {
+    factors.push(makeFactor('risk', 'constraint-risk', 2, 'Many constraints increase chance of missing a hard rule.'));
+  } else if (structuredTask.constraints.length >= 2) {
+    factors.push(makeFactor('risk', 'constraint-risk', 1, 'Some constraints require extra checking.'));
+  }
+
+  if (structuredTask.taskType === 'debug' || structuredTask.taskType === 'analysis') {
+    factors.push(makeFactor('risk', 'task-risk', 2, `${structuredTask.taskType} task benefits from stronger evidence synthesis.`));
+  }
+
+  return factors;
+}
+
+function buildBudgetPressureFactors(result: StructurizerResult): RouteScoreFactor[] {
+  const structuredTask = result.structuredTask;
+  const contextSummaryText = structuredTask.contextSummary.join(' ').toLowerCase();
+  const factors: RouteScoreFactor[] = [];
+
+  if (structuredTask.qualityBar === 'high') {
+    factors.push(makeFactor('budget-pressure', 'quality-cost', 3, 'High quality bar increases expected model and verification cost.'));
+  } else if (structuredTask.qualityBar === 'balanced') {
+    factors.push(makeFactor('budget-pressure', 'quality-cost', 1, 'Balanced quality bar keeps moderate cost pressure.'));
+  } else {
+    factors.push(makeFactor('budget-pressure', 'quality-cost', 0, 'Fast quality bar lowers cost pressure.'));
+  }
+
+  if (structuredTask.contextSummary.length >= 4) {
+    factors.push(makeFactor('budget-pressure', 'context-volume', 3, 'Many context refs increase prompt budget pressure.'));
+  } else if (structuredTask.contextSummary.length >= 2) {
+    factors.push(makeFactor('budget-pressure', 'context-volume', 1, 'Multiple context refs add moderate prompt cost.'));
+  }
+
+  if (contextSummaryText.includes('truncated') || contextSummaryText.includes('tokens≈')) {
+    factors.push(makeFactor('budget-pressure', 'context-pruning', 2, 'Pruned or truncated context signals token pressure.'));
+  }
+
+  if (structuredTask.target.kind === 'workspace') {
+    factors.push(makeFactor('budget-pressure', 'workspace-cost', 2, 'Workspace routing can consume broader context budget.'));
+  }
+
+  if (structuredTask.taskType === 'analysis' || structuredTask.taskType === 'implementation') {
+    factors.push(makeFactor('budget-pressure', 'task-cost', 1, `${structuredTask.taskType} task often needs longer output and reasoning.`));
+  }
+
+  return factors;
+}
+
+function sumFactors(factors: RouteScoreFactor[], dimension: RouteScoreDimension): number {
+  return clampScore(factors.filter((factor) => factor.dimension === dimension).reduce((sum, factor) => sum + factor.score, 0));
+}
+
+function buildCompositeScore(complexityScore: number, riskScore: number, budgetPressureScore: number, config: RouteScoringConfig): number {
+  return Number((
+    complexityScore * config.complexityWeight
+    + riskScore * config.riskWeight
+    + budgetPressureScore * config.budgetPressureWeight
+  ).toFixed(2));
+}
+
+function buildConfidence(route: RouteTier, compositeScore: number, config: RouteScoringConfig): number {
+  const distanceFromThreshold = Math.abs(compositeScore - config.complexThreshold);
+  const base = route === 'simple' ? 0.6 : 0.58;
+  const confidence = base + Math.min(distanceFromThreshold, 6) * 0.06;
+  return clampConfidence(distanceFromThreshold < config.lowConfidenceMargin ? Math.min(confidence, 0.69) : confidence);
+}
+
+function buildRouteReason(route: RouteTier, factors: RouteScoreFactor[], compositeScore: number, config: RouteScoringConfig): string {
   const topFactors = [...factors].sort((left, right) => right.score - left.score).slice(0, 3);
 
   if (route === 'simple') {
@@ -119,29 +236,38 @@ function buildRouteReason(route: RouteTier, factors: RouteScoreFactor[]): string
         .map((factor) => factor.detail),
     );
 
-    return simpleSignals[0] ?? 'Low complexity score with narrow scope; use cheaper path.';
+    return simpleSignals[0] ?? `Composite score ${compositeScore} stays below threshold ${config.complexThreshold}; use cheaper path.`;
   }
 
-  return unique(topFactors.map((factor) => factor.detail)).join(' ');
+  return `${unique(topFactors.map((factor) => factor.detail)).join(' ')} Composite score ${compositeScore} meets threshold ${config.complexThreshold}.`;
 }
 
-function inferRouteDecision(result: StructurizerResult): unknown {
-  const scoreBreakdown = buildComplexityFactors(result);
-  const complexityScore = scoreBreakdown.reduce((sum, factor) => sum + factor.score, 0);
-  const route: RouteTier = complexityScore >= SIMPLE_ROUTE_THRESHOLD ? 'complex' : 'simple';
-  const distanceFromThreshold = Math.abs(complexityScore - SIMPLE_ROUTE_THRESHOLD);
-  const confidence = route === 'simple'
-    ? clampConfidence(0.62 + distanceFromThreshold * 0.08)
-    : clampConfidence(0.58 + distanceFromThreshold * 0.07);
+function inferRouteDecision(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>): unknown {
+  const config = resolveRouteScoringConfig(scoringConfig);
+  const scoreBreakdown = [
+    ...buildComplexityFactors(result),
+    ...buildRiskFactors(result),
+    ...buildBudgetPressureFactors(result),
+  ];
+  const complexityScore = sumFactors(scoreBreakdown, 'complexity');
+  const riskScore = sumFactors(scoreBreakdown, 'risk');
+  const budgetPressureScore = sumFactors(scoreBreakdown, 'budget-pressure');
+  const compositeScore = buildCompositeScore(complexityScore, riskScore, budgetPressureScore, config);
+  const route: RouteTier = compositeScore >= config.complexThreshold ? 'complex' : 'simple';
+  const confidence = buildConfidence(route, compositeScore, config);
 
   return {
     status: 'routed',
     route,
-    reason: buildRouteReason(route, scoreBreakdown),
+    reason: buildRouteReason(route, scoreBreakdown, compositeScore, config),
     confidence,
     complexityScore,
+    riskScore,
+    budgetPressureScore,
+    compositeScore,
     scoreBreakdown,
-    strategy: 'rules-v1',
+    scoringConfig: config,
+    strategy: 'rules-v2',
   };
 }
 
@@ -155,19 +281,25 @@ export function buildRouterScoreInput(result: StructurizerResult): string {
 }
 
 export function createSafeFallbackRouteDecision(reason: string): RouteDecision {
+  const config = DEFAULT_ROUTE_SCORING_CONFIG;
   return RouteDecisionSchema.parse({
     status: 'fallback',
     route: 'complex',
     reason: 'Router fell back to safer complex path.',
     confidence: 0.2,
     complexityScore: 12,
+    riskScore: 12,
+    budgetPressureScore: 8,
+    compositeScore: buildCompositeScore(12, 12, 8, config),
     scoreBreakdown: [
       {
         factor: 'router-fallback',
+        dimension: 'risk',
         score: 4,
         detail: reason,
       },
     ],
+    scoringConfig: config,
     strategy: 'safe-fallback',
     fallbackReason: reason,
   });
@@ -189,6 +321,6 @@ export function parseRouteDecision(candidate: unknown): RouteDecision {
   }
 }
 
-export function routeTask(result: StructurizerResult): RouteDecision {
-  return parseRouteDecision(inferRouteDecision(result));
+export function routeTask(result: StructurizerResult, scoringConfig?: Partial<RouteScoringConfig>): RouteDecision {
+  return parseRouteDecision(inferRouteDecision(result, scoringConfig));
 }

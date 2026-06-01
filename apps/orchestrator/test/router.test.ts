@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TaskRequest } from '@llm-crane/schemas';
+import type { StructurizerResult, TaskRequest } from '@llm-crane/schemas';
 import { buildRouterScoreInput, parseRouteDecision, routeTask } from '../src/router';
 import { structurizeTaskRequest } from '../src/structurizer';
 
@@ -62,6 +62,44 @@ describe('routeTask', () => {
     expect(decision.status).toBe('routed');
     expect(decision.route).toBe('complex');
     expect(decision.complexityScore).toBeGreaterThanOrEqual(4);
+    expect(decision.riskScore).toBeGreaterThan(0);
+    expect(decision.budgetPressureScore).toBeGreaterThan(0);
+    expect(decision.compositeScore).toBeGreaterThanOrEqual(4);
+    expect(decision.strategy).toBe('rules-v2');
+    expect(decision.scoreBreakdown.map((factor) => factor.dimension)).toEqual(expect.arrayContaining(['complexity', 'risk', 'budget-pressure']));
+  });
+
+  it('uses adjustable score weights when combining dimensions', () => {
+    const structurizerResult: StructurizerResult = {
+      status: 'structured',
+      structuredTask: {
+        taskType: 'refactor',
+        qualityBar: 'fast',
+        target: {
+          kind: 'selection',
+          value: 'selected function',
+        },
+        constraints: [],
+        expectedOutput: [],
+        openQuestions: ['Which compatibility edge cases matter?'],
+        uncertaintyReasons: [],
+        contextSummary: [],
+      },
+      warnings: [],
+    };
+
+    const defaultDecision = routeTask(structurizerResult);
+    const riskWeightedDecision = routeTask(structurizerResult, {
+      complexityWeight: 0,
+      riskWeight: 1,
+      budgetPressureWeight: 0,
+      complexThreshold: 3,
+    });
+
+    expect(defaultDecision.route).toBe('simple');
+    expect(riskWeightedDecision.route).toBe('complex');
+    expect(riskWeightedDecision.scoringConfig?.riskWeight).toBe(1);
+    expect(riskWeightedDecision.compositeScore).toBe(riskWeightedDecision.riskScore);
   });
 
   it('defaults to safe fallback path when route payload is invalid', () => {
@@ -70,6 +108,7 @@ describe('routeTask', () => {
     expect(decision.status).toBe('fallback');
     expect(decision.route).toBe('complex');
     expect(decision.fallbackReason).toContain('Router output invalid');
+    expect(decision.riskScore).toBeGreaterThan(0);
   });
 });
 

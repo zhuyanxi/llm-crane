@@ -17,7 +17,7 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 - Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
-- Result panel now explains route selection with route reason, routing confidence, early-exit savings, and automatic-versus-manual override status.
+- Result panel now explains route selection with complexity, risk, budget-pressure, composite score, routing confidence, early-exit savings, and automatic-versus-manual override status.
 - Complex-path verifier stage now runs after Executor, merges low-cost model consistency review with hard rule checks for explicit JSON or list-format requirements, then records structured verdict, findings, and suggested action.
 - Verification failures now surface dedicated panel actions so user can retry executor, approve automatic model upgrade with recorded extra cost, or manually confirm current result.
 - Retriable provider failures now retry automatically with configurable fixed or exponential backoff, and each scheduled retry is recorded in trace metadata.
@@ -74,7 +74,7 @@ Run inside VS Code:
 - Pipeline graph, stage states, and execution path summary
 - Pipeline timeline with stage order, status, duration, and per-stage summaries for simple and complex graphs
 - Verifier summary with merged model/rule verdict, reasons, findings, suggested next action, and verification action buttons when verifier outcome exists
-- Routing summary with route status, confidence, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
+- Routing summary with route status, confidence, complexity/risk/budget-pressure scoring, route rationale, selected model/runtime, and early-exit savings when planner or reasoner does not run
 - Planner status, ordered steps, and planner trace entries for complex tasks
 - Reasoner decision, early-exit cause or escalation summary, and key evidence when complex routing needs extra synthesis
 - Execution mode summary showing full run versus stage rerun, plus retained trace history count
@@ -244,6 +244,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template
 - VS Code task panel now aggregates pipeline state plus stage trace into timeline cards so users can inspect duration, summaries, and failed stage reasons without scanning raw trace only
 - VS Code task panel now surfaces router confidence, `routeReason`, override source, and manual model override controls with configured-model validation
+- Router now emits V2 score dimensions: `complexityScore`, `riskScore`, `budgetPressureScore`, `compositeScore`, `scoreBreakdown`, and `scoringConfig`; trace and UI consume those scores while preserving legacy route payload compatibility
 - VS Code task panel now surfaces verifier failure reasons, retry or upgrade actions, manual confirmation, and recorded upgrade cost delta inside result history and trace
 - VS Code task panel now keeps bounded session history and lets user switch displayed result, request preview, and trace without overwriting composer inputs
 - Task response includes checkpoint payload so UI can rerun from stage boundary without recomputing all prior stages

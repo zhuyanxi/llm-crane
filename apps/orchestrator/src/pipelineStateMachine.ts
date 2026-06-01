@@ -372,6 +372,9 @@ export function createRouterStageOutput(routeDecision: RouteDecision): PipelineS
     status: routeDecision.status,
     route: routeDecision.route,
     complexityScore: routeDecision.complexityScore,
+    riskScore: routeDecision.riskScore,
+    budgetPressureScore: routeDecision.budgetPressureScore,
+    compositeScore: routeDecision.compositeScore,
     confidence: routeDecision.confidence,
     fallbackReason: routeDecision.fallbackReason,
   };

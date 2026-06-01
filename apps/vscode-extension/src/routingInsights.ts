@@ -16,7 +16,13 @@ export function buildRoutingInsight(
 ): RoutingInsightView {
   const confidencePercent = Math.round(taskResponse.routeDecision.confidence * 100);
   const routeSummary = `${taskResponse.routeDecision.route} route · ${taskResponse.routeDecision.status}`;
-  const routeDetailParts = [`${confidencePercent}% confidence`, `score=${taskResponse.routeDecision.complexityScore}`];
+  const routeDetailParts = [
+    `${confidencePercent}% confidence`,
+    `complexity=${taskResponse.routeDecision.complexityScore}`,
+    `risk=${taskResponse.routeDecision.riskScore ?? 0}`,
+    `budget=${taskResponse.routeDecision.budgetPressureScore ?? 0}`,
+    `composite=${taskResponse.routeDecision.compositeScore ?? taskResponse.routeDecision.complexityScore}`,
+  ];
   if (taskResponse.routeDecision.strategy) {
     routeDetailParts.push(`strategy=${taskResponse.routeDecision.strategy}`);
   }
