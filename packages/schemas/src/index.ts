@@ -8,8 +8,52 @@ export const ProviderDeploymentModeSchema = z.enum(['hosted', 'local']);
 export const ProviderApiFamilySchema = z.enum(['openai-compatible', 'anthropic', 'gemini', 'ollama']);
 export const ProviderAuthModeSchema = z.enum(['none', 'bearer', 'header', 'query']);
 
-export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace']);
+export const ContextSourceSchema = z.enum(['manual', 'selection', 'file', 'workspace', 'terminal', 'user']);
 export const ContextPrioritySchema = z.enum(['primary', 'supporting']);
+
+export const ContextBudgetStageSchema = z.enum(['structurizer', 'planner', 'reasoner']);
+
+export const ContextSourceRegistryEntrySchema = z.object({
+  source: ContextSourceSchema,
+  label: z.string().min(1),
+  description: z.string().min(1),
+  defaultPriority: ContextPrioritySchema.default('supporting'),
+  supportsUri: z.boolean().default(false),
+  supportsLanguageId: z.boolean().default(false),
+  supportsCommand: z.boolean().default(false),
+});
+
+export const ContextSourceMetadataSchema = z.object({
+  sourceId: z.string().min(1),
+  source: ContextSourceSchema,
+  label: z.string().min(1),
+  description: z.string().min(1).optional(),
+  uri: z.string().optional(),
+  languageId: z.string().optional(),
+  command: z.string().min(1).optional(),
+  capturedAt: z.string().datetime().optional(),
+});
+
+export const ContextRelevanceFactorSchema = z.object({
+  factor: z.string().min(1),
+  score: z.number().min(0).max(1),
+  detail: z.string().min(1),
+});
+
+export const ContextRelevanceScoreSchema = z.object({
+  score: z.number().min(0).max(1),
+  rank: z.number().int().positive().optional(),
+  summary: z.string().min(1),
+  factors: z.array(ContextRelevanceFactorSchema).default([]),
+});
+
+export const ContextPruningMetadataSchema = z.object({
+  locked: z.boolean().default(false),
+  included: z.boolean().default(true),
+  includedStages: z.array(ContextBudgetStageSchema).default([]),
+  estimatedTokens: z.number().int().nonnegative(),
+  reason: z.string().min(1),
+});
 
 export const TaskContextSchema = z.object({
   source: ContextSourceSchema,
@@ -19,6 +63,10 @@ export const TaskContextSchema = z.object({
   content: z.string().min(1),
   truncated: z.boolean().default(false),
   originalLength: z.number().int().positive().optional(),
+  locked: z.boolean().default(false),
+  sourceMetadata: ContextSourceMetadataSchema.optional(),
+  relevance: ContextRelevanceScoreSchema.optional(),
+  pruning: ContextPruningMetadataSchema.optional(),
 });
 
 export const ProviderSelectionSchema = z.object({
@@ -860,7 +908,13 @@ export type ProviderDeploymentMode = z.infer<typeof ProviderDeploymentModeSchema
 export type ProviderApiFamily = z.infer<typeof ProviderApiFamilySchema>;
 export type ProviderAuthMode = z.infer<typeof ProviderAuthModeSchema>;
 export type ContextSource = z.infer<typeof ContextSourceSchema>;
+export type ContextBudgetStage = z.infer<typeof ContextBudgetStageSchema>;
 export type TaskContext = z.infer<typeof TaskContextSchema>;
+export type ContextSourceRegistryEntry = z.infer<typeof ContextSourceRegistryEntrySchema>;
+export type ContextSourceMetadata = z.infer<typeof ContextSourceMetadataSchema>;
+export type ContextRelevanceFactor = z.infer<typeof ContextRelevanceFactorSchema>;
+export type ContextRelevanceScore = z.infer<typeof ContextRelevanceScoreSchema>;
+export type ContextPruningMetadata = z.infer<typeof ContextPruningMetadataSchema>;
 export type ProviderSelection = z.infer<typeof ProviderSelectionSchema>;
 export type ProviderRuntimeProfile = z.infer<typeof ProviderRuntimeProfileSchema>;
 export type ProviderErrorCode = z.infer<typeof ProviderErrorCodeSchema>;

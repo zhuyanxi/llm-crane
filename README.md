@@ -12,7 +12,8 @@ LLM Crane runs task requests through local orchestration instead of sending ever
 ### What you get
 
 - Run task from VS Code Command Palette with freeform, refactor, debug, or architecture-analysis templates plus template-default, selection-first, file-first, or manual-only context strategies.
-- Preview template-aware context capture before sending, including selection-first, current-file-first, and manual-only strategies.
+- Preview template-aware context capture before sending, including selection-first, current-file-first, manual-only, terminal output, and user-notes sources.
+- Context preview now ranks sources by relevance, shows scoring hints, applies stage token budgets, and lets users lock primary/user context against pruning.
 - Route task through staged pipeline graphs instead of one opaque model call; complex path now records Planner and conditional Reasoner before Executor.
 - Structurizer now consumes template and context metadata, records confidence, and carries expected output hints into downstream stages.
 - Result panel now shows pipeline timeline with ordered stages, per-stage status, duration, summary output, and failure highlight.
@@ -64,7 +65,7 @@ Run inside VS Code:
 ### What result panel shows
 
 - Output text from task execution
-- Context preview before send, with source, priority, and truncation warnings for attached editor contexts
+- Context preview before send, with source metadata, priority, relevance rank, approximate token budget, lock state, pruning stages, and truncation warnings for attached contexts
 - Validated TaskRequest preview including selected task template and template inputs when present
 - Selected provider/model
 - Request and response summaries showing automatic routing versus manual model override
@@ -218,6 +219,7 @@ Common package-scoped examples:
 ```bash
 corepack pnpm --filter @llm-crane/orchestrator test
 corepack pnpm --filter @llm-crane/vscode-extension build
+corepack pnpm --filter @llm-crane/vscode-extension eval:context-pruning
 corepack pnpm --filter @llm-crane/vscode-extension package:vsix
 corepack pnpm --filter @llm-crane/schemas typecheck
 ```
@@ -236,6 +238,7 @@ VSIX packaging writes the distributable file to `apps/vscode-extension/artifacts
 - Router chooses simple vs complex path with rules-based scoring and safe fallback
 - Complex path runs Planner, Reasoner, Executor, then Verifier; verifier combines low-cost model review with built-in hard format/schema checks before final response is assembled
 - Task panel supports optional template metadata for refactor, debug, and architecture-analysis requests; validated template selection is carried inside `taskTemplate`
+- Task panel supports V2 context source metadata for file, selection, terminal output, user notes, workspace, and legacy manual contexts, with relevance scoring and budget pruning before submission
 - Built-in templates now carry context strategy metadata, and attached contexts can include `priority`, `truncated`, and `originalLength` for preview and downstream prompts
 - Structurizer output now carries `expectedOutput` hints plus `confidence`, and serialized structurizer stage state includes template/context metadata for UI and logs
 - Prompt assets now live under `packages/prompts/src/v1/*`, with separate Structurizer and Executor guidance for each built-in template

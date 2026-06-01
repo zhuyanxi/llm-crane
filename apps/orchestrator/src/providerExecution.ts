@@ -58,6 +58,18 @@ type InvokeRoutedProviderOptions = {
 
 function formatContext(context: TaskContext, index: number): string {
   const headerParts = [`Context ${index + 1}`, `source=${context.source}`, `priority=${context.priority}`];
+  if (context.sourceMetadata?.label) {
+    headerParts.push(`label=${context.sourceMetadata.label}`);
+  }
+  if (context.relevance) {
+    headerParts.push(`rank=${context.relevance.rank}`, `score=${context.relevance.score}`, `reason=${context.relevance.summary}`);
+  }
+  if (context.locked) {
+    headerParts.push('locked=true');
+  }
+  if (context.pruning) {
+    headerParts.push(`tokens≈${context.pruning.estimatedTokens}`, `budgetStages=${context.pruning.includedStages.join(',')}`);
+  }
   if (context.languageId) {
     headerParts.push(`language=${context.languageId}`);
   }

@@ -60,15 +60,23 @@ type SubmitTaskPanelInboundMessage = {
   templateId: string;
   templateValues: Record<string, string>;
   includeSupportingContext: boolean;
+  lockPrimaryContext?: boolean;
+  terminalOutput?: string;
+  userNotes?: string;
   modelOverrideMode: ModelOverrideMode;
   overrideModelId: string;
 };
 
 type PreviewContextPanelInboundMessage = {
   type: 'previewContext';
+  value?: string;
   contextMode: ContextCaptureMode;
   templateId: string;
+  templateValues?: Record<string, string>;
   includeSupportingContext: boolean;
+  lockPrimaryContext?: boolean;
+  terminalOutput?: string;
+  userNotes?: string;
 };
 
 type RerunTaskPanelInboundMessage = {
@@ -253,7 +261,18 @@ async function handleTaskPanelMessage(
   panelSession: TaskPanelSession,
 ): Promise<void> {
   if (isPreviewContextPanelInboundMessage(message)) {
-    postContextPreview(webview, buildContextPreviewMessage(message.contextMode, message.templateId, message.includeSupportingContext));
+    postContextPreview(webview, buildContextPreviewMessage(
+      message.contextMode,
+      message.templateId,
+      message.includeSupportingContext,
+      {
+        taskText: message.value,
+        templateValues: message.templateValues,
+        terminalOutput: message.terminalOutput,
+        userNotes: message.userNotes,
+        lockPrimaryContext: message.lockPrimaryContext,
+      },
+    ));
     return;
   }
 
@@ -309,6 +328,9 @@ async function handleTaskPanelMessage(
         message.templateId,
         message.templateValues,
         message.includeSupportingContext,
+        message.lockPrimaryContext ?? false,
+        message.terminalOutput ?? '',
+        message.userNotes ?? '',
         message.modelOverrideMode,
         message.overrideModelId,
       );
@@ -603,6 +625,9 @@ function isSubmitTaskPanelInboundMessage(message: unknown): message is SubmitTas
     typeof candidate.templateId === 'string' &&
     isStringRecord(candidate.templateValues) &&
     typeof candidate.includeSupportingContext === 'boolean' &&
+    (candidate.lockPrimaryContext === undefined || typeof candidate.lockPrimaryContext === 'boolean') &&
+    (candidate.terminalOutput === undefined || typeof candidate.terminalOutput === 'string') &&
+    (candidate.userNotes === undefined || typeof candidate.userNotes === 'string') &&
     typeof candidate.modelOverrideMode === 'string' &&
     typeof candidate.overrideModelId === 'string' &&
     isModelOverrideMode(candidate.modelOverrideMode) &&
@@ -622,9 +647,14 @@ function isPreviewContextPanelInboundMessage(message: unknown): message is Previ
   const candidate = message as Partial<PreviewContextPanelInboundMessage>;
   return (
     candidate.type === 'previewContext' &&
+    (candidate.value === undefined || typeof candidate.value === 'string') &&
     typeof candidate.contextMode === 'string' &&
     typeof candidate.templateId === 'string' &&
+    (candidate.templateValues === undefined || isStringRecord(candidate.templateValues)) &&
     typeof candidate.includeSupportingContext === 'boolean' &&
+    (candidate.lockPrimaryContext === undefined || typeof candidate.lockPrimaryContext === 'boolean') &&
+    (candidate.terminalOutput === undefined || typeof candidate.terminalOutput === 'string') &&
+    (candidate.userNotes === undefined || typeof candidate.userNotes === 'string') &&
     isContextCaptureMode(candidate.contextMode)
   );
 }
@@ -761,10 +791,28 @@ function buildContextCollectionPlan(
   contextMode: ContextCaptureMode,
   templateId: string,
   includeSupportingContext: boolean,
+  options?: {
+    taskText?: string;
+    templateValues?: Record<string, string>;
+    terminalOutput?: string;
+    userNotes?: string;
+    lockPrimaryContext?: boolean;
+  },
 ) {
   const templateDefinition = resolveTaskTemplateDefinition(templateId);
   const strategy = resolveContextStrategy(contextMode, templateDefinition?.contextStrategy, includeSupportingContext);
-  const plan = planTaskContexts(getEditorContextSnapshot(), strategy);
+  const taskText = options?.taskText ?? buildTaskDraftPreview('', templateId, normalizeTemplateValues(options?.templateValues ?? {}));
+  const plan = planTaskContexts(getEditorContextSnapshot(), strategy, {
+    task: taskText,
+    taskType: templateDefinition?.taskType,
+    templateId: templateDefinition?.templateId,
+    constraints: templateDefinition?.defaultConstraints,
+    lockPrimaryContext: options?.lockPrimaryContext ?? false,
+    supplementalSources: {
+      terminalOutput: options?.terminalOutput,
+      userNotes: options?.userNotes,
+    },
+  });
 
   return {
     templateDefinition,
@@ -780,11 +828,21 @@ function buildContextPreviewMessage(
   contextMode: ContextCaptureMode,
   templateId: string,
   includeSupportingContext: boolean,
+  options?: {
+    taskText?: string;
+    templateValues?: Record<string, string>;
+    terminalOutput?: string;
+    userNotes?: string;
+    lockPrimaryContext?: boolean;
+  },
 ): ContextPreviewMessage {
   try {
-    const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
+    const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext, options);
     const effectiveModeLabel = getContextModeLabel(plan.effectiveStrategy.mode);
     const templatePrefix = templateDefinition ? `${templateDefinition.label} template. ` : 'Freeform task. ';
+    const pruningDetail = plan.pruningSummary && plan.pruningSummary.length > 0
+      ? ` ${plan.pruningSummary.map((summary) => summary.detail).join(' ')}`
+      : '';
 
     return {
       type: 'contextPreview',
@@ -793,17 +851,21 @@ function buildContextPreviewMessage(
         ? `${templatePrefix}${plan.blockingError}`
         : plan.contexts.length === 0
           ? `${templatePrefix}No editor context will be attached.`
-          : `${templatePrefix}${plan.contexts.length} context item(s) ready with ${effectiveModeLabel.toLowerCase()} strategy.`,
+          : `${templatePrefix}${plan.contexts.length} context item(s) ready with ${effectiveModeLabel.toLowerCase()} strategy.${pruningDetail}`,
       warnings: plan.warnings,
       blockingError: plan.blockingError,
       items: plan.contexts.map((context) => ({
-        headline: `${context.source} · ${context.priority}`,
+        headline: `${context.sourceMetadata?.label ?? context.source} · ${context.priority}${context.locked ? ' · locked' : ''}`,
         detail: [
+          context.relevance ? `rank=${context.relevance.rank}` : undefined,
+          context.relevance ? `score=${context.relevance.score.toFixed(2)}` : undefined,
+          context.pruning ? `tokens≈${context.pruning.estimatedTokens}` : undefined,
           context.languageId ? `language=${context.languageId}` : undefined,
           context.uri ? `uri=${context.uri}` : undefined,
           context.truncated && context.originalLength
             ? `chars=${context.content.length}/${context.originalLength}`
             : `chars=${context.content.length}`,
+          context.pruning?.includedStages.length ? `stages=${context.pruning.includedStages.join(',')}` : undefined,
         ]
           .filter(Boolean)
           .join(' · '),
@@ -829,12 +891,15 @@ function buildTaskRequest(
   templateId: string,
   templateValues: Record<string, string>,
   includeSupportingContext: boolean,
+  lockPrimaryContext: boolean,
+  terminalOutput: string,
+  userNotes: string,
   modelOverrideMode: ModelOverrideMode,
   overrideModelId: string,
 ): TaskRequest {
   const normalizedTask = task.trim();
   const normalizedTemplateValues = normalizeTemplateValues(templateValues);
-  const { templateDefinition, plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext);
+  const templateDefinition = resolveTaskTemplateDefinition(templateId);
   const modelOverrideCatalog = loadModelOverrideCatalog();
   const userTaskPolicySettings = loadUserTaskPolicySettingsForCurrentWorkspace(modelOverrideCatalog);
   const policyOverrides = resolveUserTaskPolicyOverrides(
@@ -851,6 +916,14 @@ function buildTaskRequest(
   const resolvedTask = templateDefinition
     ? buildTemplateTaskText(templateDefinition, normalizedTemplateValues, normalizedTask)
     : normalizedTask;
+
+  const { plan } = buildContextCollectionPlan(contextMode, templateId, includeSupportingContext, {
+    taskText: resolvedTask,
+    templateValues: normalizedTemplateValues,
+    terminalOutput,
+    userNotes,
+    lockPrimaryContext,
+  });
 
   if (!resolvedTask.trim()) {
     throw new Error('Enter task text or choose a template with the required inputs before submitting.');
@@ -941,12 +1014,18 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
   const overrideSummary = formatTaskPolicyOverride(taskRequest.policyOverrides);
 
   if (taskRequest.contexts.length === 0) {
-    return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Manual input only. No editor context attached.`;
+    return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Manual input only. No context attached.`;
   }
 
   const details = taskRequest.contexts
     .map((context: TaskContext) => {
       const parts: string[] = [context.source, context.priority];
+      if (context.relevance) {
+        parts.push(`rank=${context.relevance.rank}`, `score=${context.relevance.score.toFixed(2)}`);
+      }
+      if (context.locked) {
+        parts.push('locked');
+      }
       if (context.languageId) {
         parts.push(context.languageId);
       }
@@ -960,7 +1039,7 @@ function formatTaskRequestSummary(taskRequest: TaskRequest, contextMode: Context
     })
     .join('; ');
 
-  return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Captured ${taskRequest.contexts.length} editor context item(s): ${details}.`;
+  return `${templatePrefix}${getContextModeLabel(contextMode)} mode. Cache ${taskRequest.cacheMode === 'bypass' ? 'bypassed' : 'enabled'}. ${overrideSummary} Captured ${taskRequest.contexts.length} context item(s): ${details}.`;
 }
 
 function formatTaskResponseSummary(
@@ -1881,12 +1960,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
   <body>
     <main class="shell">
       <header>
-        <p class="eyebrow">V1-S16</p>
+        <p class="eyebrow">V2-E01</p>
         <h1>LLM Crane Run Task</h1>
         <p class="intro">
-          Use Command Palette entry to open panel, choose a task template or freeform mode, preview template-aware context capture,
-          then submit from inside VS Code. Current step adds verification failure handling so verifier reasons, suggested actions,
-          retry paths, model-upgrade reruns, manual confirmation, and upgrade cost deltas are visible without leaving the panel.
+          Use Command Palette entry to open panel, choose a task template or freeform mode, preview ranked context capture,
+          then submit from inside VS Code. Context preview now includes source metadata, relevance rank, lock state, and pruning budget fit.
         </p>
       </header>
 
@@ -1915,6 +1993,11 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         <label class="checkbox-row" for="include-supporting-context">
           <input id="include-supporting-context" type="checkbox" />
           Include supporting context when available
+        </label>
+
+        <label class="checkbox-row" for="lock-primary-context">
+          <input id="lock-primary-context" type="checkbox" />
+          Lock primary context from pruning
         </label>
 
         <div class="field-group">
@@ -1949,6 +2032,18 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         </div>
 
         <div class="field-group">
+          <label for="terminal-output-input">Terminal output context</label>
+          <textarea id="terminal-output-input" placeholder="Paste stack trace, failing command output, or test failure log."></textarea>
+          <span class="hint">Attached as terminal source and ranked with editor context.</span>
+        </div>
+
+        <div class="field-group">
+          <label for="user-notes-input">User notes context</label>
+          <textarea id="user-notes-input" placeholder="Constraints, facts, or decisions that must stay attached to this task."></textarea>
+          <span class="hint">Attached as locked user source so pruning keeps it.</span>
+        </div>
+
+        <div class="field-group">
           <label for="task-input">Additional instructions</label>
           <textarea id="task-input" placeholder="Example: Review current file, explain bug risk, propose small refactor."></textarea>
           <span class="hint">Freeform mode requires task text. Template mode can run from template inputs alone and will append anything typed here.</span>
@@ -1969,7 +2064,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           <div class="action-buttons">
             <button id="refresh-context-preview" type="button" class="secondary-button">Refresh Context Preview</button>
           </div>
-          <span class="hint">Preview shows effective capture strategy, source, priority, and truncation.</span>
+          <span class="hint">Preview shows effective capture strategy, source, priority, rank, pruning state, and truncation.</span>
         </div>
         <div id="context-preview-warning-block" hidden>
           <span class="preview-label">Context warnings</span>
@@ -2141,6 +2236,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const contextModeInput = document.getElementById('context-mode');
       const contextModeHint = document.getElementById('context-mode-hint');
       const includeSupportingContextInput = document.getElementById('include-supporting-context');
+      const lockPrimaryContextInput = document.getElementById('lock-primary-context');
       const modelOverrideModeInput = document.getElementById('model-override-mode');
       const modelOverrideHint = document.getElementById('model-override-hint');
       const specificModelBlock = document.getElementById('specific-model-block');
@@ -2148,6 +2244,8 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       const specificModelHint = document.getElementById('specific-model-hint');
       const templateFieldsBlock = document.getElementById('template-fields-block');
       const templateFields = document.getElementById('template-fields');
+      const terminalOutputInput = document.getElementById('terminal-output-input');
+      const userNotesInput = document.getElementById('user-notes-input');
       const taskInput = document.getElementById('task-input');
       const ignoreCacheInput = document.getElementById('ignore-cache');
       const refreshContextPreviewButton = document.getElementById('refresh-context-preview');
@@ -2431,9 +2529,14 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
       function requestContextPreview() {
         vscode.postMessage({
           type: 'previewContext',
+          value: taskInput.value,
           contextMode: contextModeInput.value,
           templateId: templateSelect.value,
+          templateValues: collectTemplateValues(),
           includeSupportingContext: includeSupportingContextInput.checked,
+          lockPrimaryContext: lockPrimaryContextInput.checked,
+          terminalOutput: terminalOutputInput.value,
+          userNotes: userNotesInput.value,
         });
       }
 
@@ -2755,6 +2858,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         const templateId = templateSelect.value;
         const templateValues = collectTemplateValues();
         const includeSupportingContext = includeSupportingContextInput.checked;
+        const lockPrimaryContext = lockPrimaryContextInput.checked;
+        const terminalOutput = terminalOutputInput.value;
+        const userNotes = userNotesInput.value;
         const modelOverrideMode = modelOverrideModeInput.value;
         const overrideModelId = specificModelInput.value;
         const submittedTask = value.trim() || (templateId === customTaskTemplateId ? '' : templateSelect.options[templateSelect.selectedIndex].textContent + ' template');
@@ -2767,6 +2873,9 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
           templateId,
           templateValues,
           includeSupportingContext,
+          lockPrimaryContext,
+          terminalOutput,
+          userNotes,
           modelOverrideMode,
           overrideModelId,
         });
@@ -2799,6 +2908,7 @@ function getTaskPanelHtml(webview: vscode.Webview): string {
         requestContextPreview();
       });
       includeSupportingContextInput.addEventListener('change', () => requestContextPreview());
+      lockPrimaryContextInput.addEventListener('change', () => requestContextPreview());
       modelOverrideModeInput.addEventListener('change', () => syncModelOverrideControls());
       templateFields.addEventListener('input', () => {
         const template = getSelectedTemplate();

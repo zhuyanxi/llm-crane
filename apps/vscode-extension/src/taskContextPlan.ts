@@ -3,6 +3,13 @@ import type {
   TaskTemplateContextStrategy,
   TaskTemplateContextStrategyMode,
 } from '@llm-crane/schemas';
+import {
+  applyContextBudgetPruning,
+  createRegisteredTaskContext,
+  scoreContextRelevance,
+  type ContextBudgetPolicy,
+  type ContextPruningStageSummary,
+} from './workspaceContext';
 
 export type ContextCaptureMode = 'template-default' | 'selection-first' | 'file-first' | 'manual-only';
 
@@ -17,7 +24,24 @@ export type PlannedContextResult = {
   effectiveStrategy: TaskTemplateContextStrategy;
   contexts: TaskContext[];
   warnings: string[];
+  pruningSummary?: ContextPruningStageSummary[];
   blockingError?: string;
+};
+
+export type SupplementalContextSources = {
+  terminalOutput?: string;
+  terminalCommand?: string;
+  userNotes?: string;
+};
+
+export type TaskContextPlanningOptions = {
+  task?: string;
+  taskType?: string;
+  templateId?: string;
+  constraints?: string[];
+  lockPrimaryContext?: boolean;
+  supplementalSources?: SupplementalContextSources;
+  budgetPolicy?: ContextBudgetPolicy;
 };
 
 const DEFAULT_CONTEXT_STRATEGY: TaskTemplateContextStrategy = {
@@ -55,15 +79,24 @@ function createTaskContext(
   priority: TaskContext['priority'],
   rawContent: string,
   maxChars: number,
+  locked: boolean,
+  index: number,
 ): TaskContext {
   const truncatedContent = truncateContent(rawContent, maxChars);
+  const context = createRegisteredTaskContext(
+    {
+      source,
+      priority,
+      uri: snapshot.uri,
+      languageId: snapshot.languageId,
+      content: truncatedContent.content,
+      locked,
+    },
+    index,
+  );
 
   return {
-    source,
-    priority,
-    uri: snapshot.uri,
-    languageId: snapshot.languageId,
-    content: truncatedContent.content,
+    ...context,
     truncated: truncatedContent.truncated,
     originalLength: truncatedContent.originalLength,
   };
@@ -112,94 +145,184 @@ function addTruncationWarnings(contexts: TaskContext[], warnings: string[]): voi
   }
 }
 
-function planSelectionFirst(snapshot: EditorContextSnapshot, strategy: TaskTemplateContextStrategy): PlannedContextResult {
-  const warnings: string[] = [];
-  const selectionContent = normalizeContent(snapshot.selectionContent);
-  const fileContent = normalizeContent(snapshot.fileContent);
-  const contexts: TaskContext[] = [];
+function appendSupplementalContexts(
+  contexts: TaskContext[],
+  warnings: string[],
+  strategy: TaskTemplateContextStrategy,
+  options?: TaskContextPlanningOptions,
+): void {
+  const terminalOutput = normalizeContent(options?.supplementalSources?.terminalOutput ?? '');
+  const userNotes = normalizeContent(options?.supplementalSources?.userNotes ?? '');
+  const supplementalContexts: TaskContext[] = [];
 
-  if (selectionContent.length > 0) {
-    contexts.push(createTaskContext(snapshot, 'selection', 'primary', selectionContent, strategy.maxChars));
+  if (terminalOutput.length > 0) {
+    const truncatedContent = truncateContent(terminalOutput, strategy.maxChars);
+    supplementalContexts.push({
+      ...createRegisteredTaskContext(
+        {
+          source: 'terminal',
+          priority: 'supporting',
+          content: truncatedContent.content,
+          command: normalizeContent(options?.supplementalSources?.terminalCommand ?? '') || 'user-provided-terminal-output',
+        },
+        contexts.length,
+      ),
+      truncated: truncatedContent.truncated,
+      originalLength: truncatedContent.originalLength,
+    });
+  }
 
-    if (strategy.includeSupportingContext && fileContent.length > 0 && shouldIncludeSupportingContext(selectionContent, fileContent)) {
-      contexts.push(createTaskContext(snapshot, 'file', 'supporting', fileContent, strategy.maxChars));
-    }
-  } else if (fileContent.length > 0) {
-    warnings.push('No active selection. Fell back to current file.');
-    contexts.push(createTaskContext(snapshot, 'file', 'primary', fileContent, strategy.maxChars));
-  } else {
+  if (userNotes.length > 0) {
+    const truncatedContent = truncateContent(userNotes, strategy.maxChars);
+    supplementalContexts.push({
+      ...createRegisteredTaskContext(
+        {
+          source: 'user',
+          priority: 'supporting',
+          content: truncatedContent.content,
+          locked: true,
+        },
+        contexts.length,
+      ),
+      truncated: truncatedContent.truncated,
+      originalLength: truncatedContent.originalLength,
+    });
+  }
+
+  contexts.push(...supplementalContexts);
+  addTruncationWarnings(supplementalContexts, warnings);
+}
+
+function finalizeContextPlan(result: PlannedContextResult, options?: TaskContextPlanningOptions): PlannedContextResult {
+  const contexts = [...result.contexts];
+  const warnings = [...result.warnings];
+  appendSupplementalContexts(contexts, warnings, result.effectiveStrategy, options);
+
+  if (contexts.length === 0) {
     return {
-      effectiveStrategy: strategy,
-      contexts: [],
+      ...result,
+      contexts,
       warnings,
-      blockingError: 'Current editor is empty. Use manual-only mode or add file content first.',
     };
   }
 
-  addTruncationWarnings(contexts, warnings);
+  const scoredContexts = scoreContextRelevance({
+    task: options?.task ?? '',
+    taskType: options?.taskType,
+    templateId: options?.templateId,
+    constraints: options?.constraints,
+    contexts,
+  });
+  const pruningResult = applyContextBudgetPruning(scoredContexts, options?.budgetPolicy);
 
   return {
-    effectiveStrategy: strategy,
-    contexts,
-    warnings,
+    effectiveStrategy: result.effectiveStrategy,
+    contexts: pruningResult.contexts,
+    warnings: [...warnings, ...pruningResult.warnings],
+    pruningSummary: pruningResult.stageSummaries,
+    blockingError: pruningResult.contexts.length > 0 ? undefined : result.blockingError,
   };
 }
 
-function planFileFirst(snapshot: EditorContextSnapshot, strategy: TaskTemplateContextStrategy): PlannedContextResult {
+function planSelectionFirst(
+  snapshot: EditorContextSnapshot,
+  strategy: TaskTemplateContextStrategy,
+  options?: TaskContextPlanningOptions,
+): PlannedContextResult {
   const warnings: string[] = [];
   const selectionContent = normalizeContent(snapshot.selectionContent);
   const fileContent = normalizeContent(snapshot.fileContent);
   const contexts: TaskContext[] = [];
+  const lockPrimaryContext = options?.lockPrimaryContext ?? false;
 
-  if (fileContent.length > 0) {
-    contexts.push(createTaskContext(snapshot, 'file', 'primary', fileContent, strategy.maxChars));
+  if (selectionContent.length > 0) {
+    contexts.push(createTaskContext(snapshot, 'selection', 'primary', selectionContent, strategy.maxChars, lockPrimaryContext, contexts.length));
 
-    if (strategy.includeSupportingContext && selectionContent.length > 0 && shouldIncludeSupportingContext(fileContent, selectionContent)) {
-      contexts.push(createTaskContext(snapshot, 'selection', 'supporting', selectionContent, strategy.maxChars));
+    if (strategy.includeSupportingContext && fileContent.length > 0 && shouldIncludeSupportingContext(selectionContent, fileContent)) {
+      contexts.push(createTaskContext(snapshot, 'file', 'supporting', fileContent, strategy.maxChars, false, contexts.length));
     }
-  } else if (selectionContent.length > 0) {
-    warnings.push('Current file is empty. Fell back to current selection.');
-    contexts.push(createTaskContext(snapshot, 'selection', 'primary', selectionContent, strategy.maxChars));
+  } else if (fileContent.length > 0) {
+    warnings.push('No active selection. Fell back to current file.');
+    contexts.push(createTaskContext(snapshot, 'file', 'primary', fileContent, strategy.maxChars, lockPrimaryContext, contexts.length));
   } else {
-    return {
+    return finalizeContextPlan({
       effectiveStrategy: strategy,
       contexts: [],
       warnings,
       blockingError: 'Current editor is empty. Use manual-only mode or add file content first.',
-    };
+    }, options);
   }
 
   addTruncationWarnings(contexts, warnings);
 
-  return {
+  return finalizeContextPlan({
     effectiveStrategy: strategy,
     contexts,
     warnings,
-  };
+  }, options);
+}
+
+function planFileFirst(
+  snapshot: EditorContextSnapshot,
+  strategy: TaskTemplateContextStrategy,
+  options?: TaskContextPlanningOptions,
+): PlannedContextResult {
+  const warnings: string[] = [];
+  const selectionContent = normalizeContent(snapshot.selectionContent);
+  const fileContent = normalizeContent(snapshot.fileContent);
+  const contexts: TaskContext[] = [];
+  const lockPrimaryContext = options?.lockPrimaryContext ?? false;
+
+  if (fileContent.length > 0) {
+    contexts.push(createTaskContext(snapshot, 'file', 'primary', fileContent, strategy.maxChars, lockPrimaryContext, contexts.length));
+
+    if (strategy.includeSupportingContext && selectionContent.length > 0 && shouldIncludeSupportingContext(fileContent, selectionContent)) {
+      contexts.push(createTaskContext(snapshot, 'selection', 'supporting', selectionContent, strategy.maxChars, false, contexts.length));
+    }
+  } else if (selectionContent.length > 0) {
+    warnings.push('Current file is empty. Fell back to current selection.');
+    contexts.push(createTaskContext(snapshot, 'selection', 'primary', selectionContent, strategy.maxChars, lockPrimaryContext, contexts.length));
+  } else {
+    return finalizeContextPlan({
+      effectiveStrategy: strategy,
+      contexts: [],
+      warnings,
+      blockingError: 'Current editor is empty. Use manual-only mode or add file content first.',
+    }, options);
+  }
+
+  addTruncationWarnings(contexts, warnings);
+
+  return finalizeContextPlan({
+    effectiveStrategy: strategy,
+    contexts,
+    warnings,
+  }, options);
 }
 
 export function planTaskContexts(
   snapshot: EditorContextSnapshot | undefined,
   strategy: TaskTemplateContextStrategy,
+  options?: TaskContextPlanningOptions,
 ): PlannedContextResult {
   if (strategy.mode === 'manual-only') {
-    return {
+    return finalizeContextPlan({
       effectiveStrategy: strategy,
       contexts: [],
       warnings: ['Manual-only mode selected. No editor context will be attached.'],
-    };
+    }, options);
   }
 
   if (!snapshot) {
-    return {
+    return finalizeContextPlan({
       effectiveStrategy: strategy,
       contexts: [],
       warnings: [],
       blockingError: 'Open file in editor before attaching selection or file context.',
-    };
+    }, options);
   }
 
-  return strategy.mode === 'selection-first' ? planSelectionFirst(snapshot, strategy) : planFileFirst(snapshot, strategy);
+  return strategy.mode === 'selection-first' ? planSelectionFirst(snapshot, strategy, options) : planFileFirst(snapshot, strategy, options);
 }
 
 export function getContextModeLabel(mode: ContextCaptureMode | TaskTemplateContextStrategyMode): string {

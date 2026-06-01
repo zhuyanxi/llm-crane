@@ -53,6 +53,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -w -p tsconfig.json",
+    "eval:context-pruning": "vitest run --config ../../vitest.config.ts test/contextPruningEval.test.ts",
     "lint": "eslint src --max-warnings=0",
     "package:vsix": "node ./scripts/package-vsix.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"

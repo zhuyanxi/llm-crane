@@ -54,6 +54,15 @@ function summarizeContext(context: TaskContext): string {
   if (context.truncated && context.originalLength) {
     parts.push(`truncated=${context.content.length}/${context.originalLength}`);
   }
+  if (context.relevance) {
+    parts.push(`rank=${context.relevance.rank}`, `score=${context.relevance.score}`);
+  }
+  if (context.locked) {
+    parts.push('locked');
+  }
+  if (context.pruning) {
+    parts.push(`tokens≈${context.pruning.estimatedTokens}`);
+  }
   return parts.join(' / ');
 }
 
@@ -68,6 +77,15 @@ function formatContextMetadataForPrompt(context: TaskContext, index: number): st
   }
   if (context.truncated && context.originalLength) {
     parts.push(`truncated=${context.content.length}/${context.originalLength}`);
+  }
+  if (context.relevance) {
+    parts.push(`rank=${context.relevance.rank}`, `score=${context.relevance.score}`, `reason=${context.relevance.summary}`);
+  }
+  if (context.locked) {
+    parts.push('locked=true');
+  }
+  if (context.pruning) {
+    parts.push(`tokens≈${context.pruning.estimatedTokens}`, `budgetStages=${context.pruning.includedStages.join(',')}`);
   }
 
   return parts.join(' | ');

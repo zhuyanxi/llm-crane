@@ -57,4 +57,48 @@ describe('planTaskContexts', () => {
     expect(result.contexts[0]).toMatchObject({ source: 'file', priority: 'primary', truncated: true, originalLength: 320 });
     expect(result.warnings[0]).toContain('truncated');
   });
+
+  it('attaches terminal output and locked user notes in manual-only mode', () => {
+    const result = planTaskContexts(
+      baseSnapshot,
+      resolveContextStrategy('manual-only', {
+        mode: 'selection-first',
+        includeSupportingContext: false,
+        maxChars: 200,
+      }),
+      {
+        task: 'Debug failing auth test',
+        taskType: 'debug',
+        supplementalSources: {
+          terminalOutput: 'Error: token expired\n    at login (/workspace/src/auth.ts:4:2)',
+          userNotes: 'Must preserve refresh token contract.',
+        },
+      },
+    );
+
+    expect(result.blockingError).toBeUndefined();
+    expect(result.contexts.map((context) => context.source)).toEqual(['user', 'terminal']);
+    expect(result.contexts[0]).toMatchObject({ source: 'user', locked: true });
+    expect(result.contexts[1]?.sourceMetadata).toMatchObject({ source: 'terminal', label: 'Terminal output' });
+  });
+
+  it('locks primary context and reports pruning summaries', () => {
+    const result = planTaskContexts(
+      baseSnapshot,
+      resolveContextStrategy('selection-first', {
+        mode: 'selection-first',
+        includeSupportingContext: true,
+        maxChars: 200,
+      }),
+      {
+        task: 'Refactor auth token refresh',
+        taskType: 'refactor',
+        lockPrimaryContext: true,
+      },
+    );
+
+    expect(result.contexts[0]).toMatchObject({ source: 'selection', locked: true });
+    expect(result.contexts[0]?.relevance?.rank).toBe(1);
+    expect(result.pruningSummary?.map((summary) => summary.stage)).toEqual(['structurizer', 'planner', 'reasoner']);
+  });
 });
